@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Edit3,
   FolderTree,
+  Plus,
   Save,
   X
 } from 'lucide-vue-next';
@@ -22,6 +23,15 @@ interface CategoryNode {
   name: string;
   description: string;
   children?: CategoryNode[];
+}
+
+interface AttributeField {
+  id: string;
+  label: string;
+  type: 'text' | 'number' | 'select';
+  value: string;
+  options?: string[];
+  custom?: boolean;
 }
 
 const kpis = ref({
@@ -78,6 +88,37 @@ const expandedCategoryIds = ref(new Set(['electronics', 'computers', 'peripheral
 const editingCategory = ref<CategoryNode | null>(null);
 const editingName = ref('');
 const editingDescription = ref('');
+const isProductModalOpen = ref(false);
+const selectedProductCategory = ref('');
+const productName = ref('');
+const productSku = ref('');
+const productAttributeFields = ref<AttributeField[]>([]);
+const savedProducts = ref<Array<{ name: string; sku: string; categoryId: string; attributes: Record<string, string> }>>([]);
+
+const attributeTemplates: Record<string, Omit<AttributeField, 'value'>[]> = {
+  laptops: [
+    { id: 'processor', label: 'Procesador', type: 'text' },
+    { id: 'ram', label: 'Memoria RAM', type: 'select', options: ['8 GB', '16 GB', '32 GB', '64 GB'] },
+    { id: 'storage', label: 'Almacenamiento', type: 'select', options: ['256 GB SSD', '512 GB SSD', '1 TB SSD', '2 TB SSD'] }
+  ],
+  monitors: [
+    { id: 'screen-size', label: 'Tamaño de pantalla', type: 'number' },
+    { id: 'resolution', label: 'Resolución', type: 'select', options: ['Full HD', 'QHD', '4K UHD', '5K'] },
+    { id: 'refresh-rate', label: 'Tasa de refresco', type: 'number' }
+  ],
+  'audio-video': [
+    { id: 'connectivity', label: 'Conectividad', type: 'text' },
+    { id: 'warranty', label: 'Garantía', type: 'select', options: ['6 meses', '1 año', '2 años'] }
+  ],
+  'keyboards-mice': [
+    { id: 'connection', label: 'Tipo de conexión', type: 'select', options: ['USB', 'Bluetooth', 'Inalámbrico 2.4 GHz'] },
+    { id: 'layout', label: 'Distribución', type: 'text' }
+  ],
+  networking: [
+    { id: 'ports', label: 'Cantidad de puertos', type: 'number' },
+    { id: 'speed', label: 'Velocidad', type: 'text' }
+  ]
+};
 
 const visibleCategories = computed(() => {
   const visible: Array<CategoryNode & { depth: number; hasChildren: boolean }> = [];
@@ -93,6 +134,18 @@ const visibleCategories = computed(() => {
 
   append(categories.value, 0);
   return visible;
+});
+
+const categoryOptions = computed(() => {
+  const options: CategoryNode[] = [];
+  function append(nodes: CategoryNode[]) {
+    nodes.forEach((category) => {
+      options.push(category);
+      if (category.children) append(category.children);
+    });
+  }
+  append(categories.value);
+  return options;
 });
 
 function toggleCategory(categoryId: string) {
@@ -130,6 +183,51 @@ function saveCategory() {
   }
   editingCategory.value = null;
 }
+
+function openProductModal() {
+  isProductModalOpen.value = true;
+  productName.value = '';
+  productSku.value = '';
+  selectedProductCategory.value = '';
+  productAttributeFields.value = [];
+}
+
+function updateProductCategory(categoryId: string) {
+  selectedProductCategory.value = categoryId;
+  productAttributeFields.value = (attributeTemplates[categoryId] || []).map((field) => ({
+    ...field,
+    value: ''
+  }));
+}
+
+function addCustomAttribute() {
+  productAttributeFields.value.push({
+    id: `custom-${Date.now()}`,
+    label: 'Nuevo atributo',
+    type: 'text',
+    value: '',
+    custom: true
+  });
+}
+
+function removeAttribute(fieldId: string) {
+  productAttributeFields.value = productAttributeFields.value.filter((field) => field.id !== fieldId);
+}
+
+function saveProduct() {
+  if (!productName.value.trim() || !productSku.value.trim() || !selectedProductCategory.value) return;
+  const attributes = productAttributeFields.value.reduce<Record<string, string>>((result, field) => {
+    if (field.label.trim()) result[field.label.trim()] = field.value;
+    return result;
+  }, {});
+  savedProducts.value.push({
+    name: productName.value.trim(),
+    sku: productSku.value.trim(),
+    categoryId: selectedProductCategory.value,
+    attributes
+  });
+  isProductModalOpen.value = false;
+}
 </script>
 
 <template>
@@ -144,7 +242,7 @@ function saveCategory() {
         <button class="px-3.5 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-xs font-semibold rounded-lg">
           Exportar Reporte
         </button>
-        <button class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm">
+        <button @click="openProductModal" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm">
           + Nuevo Producto
         </button>
       </div>
@@ -388,6 +486,95 @@ function saveCategory() {
             >
               <Save class="w-3.5 h-3.5" />
               Guardar cambios
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal de Nuevo Producto con Atributos Dinámicos -->
+    <div
+      v-if="isProductModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="product-modal-title"
+      @click.self="isProductModalOpen = false"
+    >
+      <div class="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700">
+        <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 id="product-modal-title" class="text-base font-bold text-slate-900 dark:text-white">Nuevo producto</h2>
+            <p class="text-xs text-slate-500 mt-1">Selecciona una categoría para cargar sus atributos sugeridos.</p>
+          </div>
+          <button type="button" class="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Cerrar modal" @click="isProductModalOpen = false">
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <form class="p-5 space-y-5" @submit.prevent="saveProduct">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <label class="block space-y-1.5">
+              <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Nombre del producto</span>
+              <input v-model="productName" type="text" required placeholder="Ej. Laptop Lenovo ThinkPad" class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none" />
+            </label>
+            <label class="block space-y-1.5">
+              <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">SKU</span>
+              <input v-model="productSku" type="text" required placeholder="Ej. LAP-LEN-T14" class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none uppercase" />
+            </label>
+          </div>
+
+          <label class="block space-y-1.5">
+            <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Categoría</span>
+            <select
+              :value="selectedProductCategory"
+              required
+              class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+              @change="updateProductCategory(($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">Selecciona una categoría</option>
+              <option v-for="category in categoryOptions" :key="category.id" :value="category.id">{{ category.name }}</option>
+            </select>
+          </label>
+
+          <div class="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+            <div class="p-4 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between gap-3">
+              <div>
+                <h3 class="text-sm font-bold text-slate-800 dark:text-slate-100">Atributos del producto</h3>
+                <p class="text-[11px] text-slate-500 mt-1">Los campos cambian automáticamente según la categoría.</p>
+              </div>
+              <button type="button" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-950/40" @click="addCustomAttribute">
+                <Plus class="w-3.5 h-3.5" />
+                Añadir campo
+              </button>
+            </div>
+
+            <div v-if="productAttributeFields.length" class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div v-for="field in productAttributeFields" :key="field.id" class="relative space-y-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <input v-if="field.custom" v-model="field.label" type="text" class="min-w-0 flex-1 px-2 py-1 text-xs font-semibold bg-transparent border-b border-slate-300 dark:border-slate-700 focus:border-blue-500 outline-none" aria-label="Nombre del atributo personalizado" />
+                  <span v-else class="text-xs font-semibold text-slate-700 dark:text-slate-300">{{ field.label }}</span>
+                  <button v-if="field.custom" type="button" class="p-1 text-slate-400 hover:text-rose-600" :aria-label="`Eliminar ${field.label}`" @click="removeAttribute(field.id)">
+                    <X class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <select v-if="field.type === 'select'" v-model="field.value" class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500">
+                  <option value="">Selecciona una opción</option>
+                  <option v-for="option in field.options" :key="option" :value="option">{{ option }}</option>
+                </select>
+                <input v-else v-model="field.value" :type="field.type" :placeholder="field.type === 'number' ? 'Ingresa un valor' : 'Ingresa un valor'" class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+              </div>
+            </div>
+            <div v-else class="p-8 text-center text-xs text-slate-400">
+              Selecciona una categoría para mostrar sus atributos.
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-2 pt-1">
+            <button type="button" class="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800" @click="isProductModalOpen = false">Cancelar</button>
+            <button type="submit" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm">
+              <Save class="w-3.5 h-3.5" />
+              Guardar producto
             </button>
           </div>
         </form>
