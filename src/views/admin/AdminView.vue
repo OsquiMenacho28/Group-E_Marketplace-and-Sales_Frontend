@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { 
   TrendingUp, 
   ShoppingBag, 
@@ -8,8 +8,21 @@ import {
   Package, 
   FileText, 
   AlertTriangle,
-  ArrowUpRight 
+  ArrowUpRight,
+  ChevronDown,
+  ChevronRight,
+  Edit3,
+  FolderTree,
+  Save,
+  X
 } from 'lucide-vue-next';
+
+interface CategoryNode {
+  id: string;
+  name: string;
+  description: string;
+  children?: CategoryNode[];
+}
 
 const kpis = ref({
   ventasHoy: 15420.50,
@@ -30,6 +43,93 @@ const lowStockAlerts = ref([
   { sku: 'MON-LG-27GP', nombre: 'Monitor LG UltraGear 27"', stockActual: 2, puntoReorden: 5 },
   { sku: 'LAP-DELL-XPS15', nombre: 'Laptop Dell XPS 15', stockActual: 3, puntoReorden: 8 }
 ]);
+
+const categories = ref<CategoryNode[]>([
+  {
+    id: 'electronics',
+    name: 'Electrónica',
+    description: 'Tecnología y dispositivos electrónicos.',
+    children: [
+      {
+        id: 'computers',
+        name: 'Computación',
+        description: 'Equipos y accesorios para computación.',
+        children: [
+          { id: 'laptops', name: 'Laptops y PCs', description: 'Computadoras portátiles y de escritorio.' },
+          { id: 'monitors', name: 'Monitores', description: 'Monitores para trabajo, diseño y gaming.' }
+        ]
+      },
+      { id: 'audio-video', name: 'Audio y Video', description: 'Equipos de audio, video y entretenimiento.' }
+    ]
+  },
+  {
+    id: 'peripherals',
+    name: 'Periféricos',
+    description: 'Accesorios para mejorar tu estación de trabajo.',
+    children: [
+      { id: 'keyboards-mice', name: 'Teclados y Mouse', description: 'Dispositivos de entrada y controles.' },
+      { id: 'networking', name: 'Redes', description: 'Conectividad, routers y accesorios de red.' }
+    ]
+  },
+  { id: 'office', name: 'Oficina', description: 'Productos para espacios de trabajo.' }
+]);
+
+const expandedCategoryIds = ref(new Set(['electronics', 'computers', 'peripherals']));
+const editingCategory = ref<CategoryNode | null>(null);
+const editingName = ref('');
+const editingDescription = ref('');
+
+const visibleCategories = computed(() => {
+  const visible: Array<CategoryNode & { depth: number; hasChildren: boolean }> = [];
+
+  function append(nodes: CategoryNode[], depth: number) {
+    nodes.forEach((category) => {
+      visible.push({ ...category, depth, hasChildren: Boolean(category.children?.length) });
+      if (category.children?.length && expandedCategoryIds.value.has(category.id)) {
+        append(category.children, depth + 1);
+      }
+    });
+  }
+
+  append(categories.value, 0);
+  return visible;
+});
+
+function toggleCategory(categoryId: string) {
+  const nextExpandedIds = new Set(expandedCategoryIds.value);
+  if (nextExpandedIds.has(categoryId)) {
+    nextExpandedIds.delete(categoryId);
+  } else {
+    nextExpandedIds.add(categoryId);
+  }
+  expandedCategoryIds.value = nextExpandedIds;
+}
+
+function openEditModal(category: CategoryNode) {
+  editingCategory.value = category;
+  editingName.value = category.name;
+  editingDescription.value = category.description;
+}
+
+function findCategory(categoryId: string, nodes: CategoryNode[]): CategoryNode | undefined {
+  for (const category of nodes) {
+    if (category.id === categoryId) return category;
+    if (category.children) {
+      const match = findCategory(categoryId, category.children);
+      if (match) return match;
+    }
+  }
+}
+
+function saveCategory() {
+  if (!editingCategory.value || !editingName.value.trim()) return;
+  const category = findCategory(editingCategory.value.id, categories.value);
+  if (category) {
+    category.name = editingName.value.trim();
+    category.description = editingDescription.value.trim();
+  }
+  editingCategory.value = null;
+}
 </script>
 
 <template>
@@ -49,6 +149,65 @@ const lowStockAlerts = ref([
         </button>
       </div>
     </div>
+
+    <!-- Gestión de Categorías -->
+    <section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+      <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div class="flex items-start gap-3">
+          <span class="p-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400">
+            <FolderTree class="w-5 h-5" />
+          </span>
+          <div>
+            <h2 class="text-sm font-bold text-slate-900 dark:text-white">Árbol de categorías</h2>
+            <p class="text-xs text-slate-500 mt-1">Organiza la jerarquía del catálogo y actualiza sus datos.</p>
+          </div>
+        </div>
+        <span class="text-[11px] font-semibold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 rounded-lg">
+          {{ categories.length }} categorías principales
+        </span>
+      </div>
+
+      <div class="divide-y divide-slate-100 dark:divide-slate-800">
+        <div
+          v-for="category in visibleCategories"
+          :key="category.id"
+          class="min-h-16 px-5 py-3 flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+          :style="{ paddingLeft: `${1.25 + category.depth * 2}rem` }"
+        >
+          <button
+            v-if="category.hasChildren"
+            type="button"
+            class="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-200"
+            :aria-label="expandedCategoryIds.has(category.id) ? `Contraer ${category.name}` : `Expandir ${category.name}`"
+            @click="toggleCategory(category.id)"
+          >
+            <ChevronDown v-if="expandedCategoryIds.has(category.id)" class="w-4 h-4" />
+            <ChevronRight v-else class="w-4 h-4" />
+          </button>
+          <span v-else class="w-6" aria-hidden="true" />
+
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <span :class="category.depth === 0 ? 'text-sm font-bold' : 'text-sm font-medium'" class="text-slate-800 dark:text-slate-100">
+                {{ category.name }}
+              </span>
+              <span v-if="category.hasChildren" class="text-[10px] text-slate-400">{{ category.children?.length }} subcategorías</span>
+            </div>
+            <p class="text-xs text-slate-500 truncate mt-0.5">{{ category.description }}</p>
+          </div>
+
+          <button
+            type="button"
+            class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40"
+            :aria-label="`Editar ${category.name}`"
+            @click="openEditModal(category)"
+          >
+            <Edit3 class="w-3.5 h-3.5" />
+            Editar
+          </button>
+        </div>
+      </div>
+    </section>
 
     <!-- Cards de KPIs Clave (RF-46) -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -166,6 +325,72 @@ const lowStockAlerts = ref([
         <button class="w-full py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg mt-2">
           Disparar Solicitud a Compras (ERP)
         </button>
+      </div>
+    </div>
+
+    <!-- Modal de Edición de Categoría -->
+    <div
+      v-if="editingCategory"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="category-modal-title"
+      @click.self="editingCategory = null"
+    >
+      <div class="w-full max-w-lg bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700">
+        <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 id="category-modal-title" class="text-base font-bold text-slate-900 dark:text-white">Editar categoría</h2>
+            <p class="text-xs text-slate-500 mt-1">Actualiza la información visible en el catálogo.</p>
+          </div>
+          <button
+            type="button"
+            class="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+            aria-label="Cerrar modal"
+            @click="editingCategory = null"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <form class="p-5 space-y-4" @submit.prevent="saveCategory">
+          <label class="block space-y-1.5">
+            <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Nombre</span>
+            <input
+              v-model="editingName"
+              type="text"
+              required
+              autofocus
+              class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+            />
+          </label>
+
+          <label class="block space-y-1.5">
+            <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Descripción</span>
+            <textarea
+              v-model="editingDescription"
+              rows="3"
+              class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none"
+            />
+          </label>
+
+          <div class="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              class="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              @click="editingCategory = null"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm"
+            >
+              <Save class="w-3.5 h-3.5" />
+              Guardar cambios
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   </div>
