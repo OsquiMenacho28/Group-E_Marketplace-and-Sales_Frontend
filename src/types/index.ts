@@ -75,3 +75,10 @@ export interface UserProfile {
   role: UserRole;
   puntos_saldo: number;
 }
+
+export interface WishlistItem {
+  id: string;
+  cliente_id: string;
+  variante_id: string;
+  created_at: string;
+}

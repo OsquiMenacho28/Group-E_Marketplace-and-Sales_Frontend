@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useCartStore } from '@/stores/cart';
 import { apiClient } from '@/api/client';
 import type { Producto } from '@/types';
+import { useWishlistStore } from '@/stores/wishlist';
 import { 
   Search, 
   ShoppingBag, 
@@ -16,10 +17,13 @@ import {
   ChevronLeft, 
   ChevronRight,
   Layers,
-  Sparkles
+  Sparkles,
+  Heart
 } from 'lucide-vue-next';
 
 const cartStore = useCartStore();
+
+const wishlistStore = useWishlistStore();
 
 const searchQuery = ref('');
 const selectedCategory = ref('Todos');
@@ -176,6 +180,17 @@ function agregarAlCarrito(prod: any) {
     precio_unitario: prod.precio
   });
 }
+
+function alternarDeseo(prod: MarketplaceProduct) {
+  const yaEsta = wishlistStore.estaEnDeseos(prod.id);
+
+  if (yaEsta) {
+    wishlistStore.eliminarDeseo('demo-client', prod.id);
+  } else {
+    wishlistStore.agregarDeseo('demo-client', prod.id);
+  }
+}
+
 </script>
 
 <template>
@@ -242,6 +257,19 @@ function agregarAlCarrito(prod: any) {
             class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 cursor-pointer"
             @click="openProductGallery(prod)"
           />
+          
+          <button
+            type="button"
+            :class="[
+              'absolute top-2.5 right-2.5 p-2 rounded-full bg-white/90 hover:bg-white shadow-sm backdrop-blur-sm transition-colors',
+              wishlistStore.estaEnDeseos(prod.id) ? 'text-rose-500' : 'text-slate-500 hover:text-rose-500'
+            ]"
+            :title="wishlistStore.estaEnDeseos(prod.id) ? 'Quitar de lista de deseos' : 'Agregar a lista de deseos'"
+            @click="alternarDeseo(prod)"
+          >
+            <Heart :class="['w-5 h-5', wishlistStore.estaEnDeseos(prod.id) ? 'fill-current' : '']" />
+          </button>
+          
           <span class="absolute top-2.5 left-2.5 bg-blue-600/90 text-white text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
             {{ prod.badge }}
           </span>

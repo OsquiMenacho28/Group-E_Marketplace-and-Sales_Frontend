@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import MarketplaceView from '@/views/marketplace/MarketplaceView.vue';
+import WishlistView from '@/views/marketplace/WishlistView.vue';
 import PosView from '@/views/pos/PosView.vue';
 import AdminView from '@/views/admin/AdminView.vue';
 import { useAuthStore } from '@/stores/auth';
@@ -41,6 +42,12 @@ const routes = [
       requiresAuth: true,
       allowedRoles: ['administrador', 'gerente_comercial']
     } satisfies ProtectedRouteMeta
+  },
+  {
+    path: '/wishlist',
+    name: 'wishlist',
+    component: WishlistView,
+    meta: { title: 'Lista de Deseos — MaxiConecta' } satisfies ProtectedRouteMeta
   }
 ];
 
