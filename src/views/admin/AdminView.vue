@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import HasRole from '@/components/HasRole.vue';
 import { 
   TrendingUp, 
   ShoppingBag, 
@@ -242,9 +243,11 @@ function saveProduct() {
         <button class="px-3.5 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-xs font-semibold rounded-lg">
           Exportar Reporte
         </button>
-        <button @click="openProductModal" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm">
-          + Nuevo Producto
-        </button>
+        <HasRole :roles="['administrador', 'gerente_comercial']">
+          <button @click="openProductModal" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm">
+            + Nuevo Producto
+          </button>
+        </HasRole>
       </div>
     </div>
 
@@ -294,15 +297,17 @@ function saveProduct() {
             <p class="text-xs text-slate-500 truncate mt-0.5">{{ category.description }}</p>
           </div>
 
-          <button
-            type="button"
-            class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40"
-            :aria-label="`Editar ${category.name}`"
-            @click="openEditModal(category)"
-          >
-            <Edit3 class="w-3.5 h-3.5" />
-            Editar
-          </button>
+          <HasRole :roles="['administrador', 'gerente_comercial']">
+            <button
+              type="button"
+              class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40"
+              :aria-label="`Editar ${category.name}`"
+              @click="openEditModal(category)"
+            >
+              <Edit3 class="w-3.5 h-3.5" />
+              Editar
+            </button>
+          </HasRole>
         </div>
       </div>
     </section>
