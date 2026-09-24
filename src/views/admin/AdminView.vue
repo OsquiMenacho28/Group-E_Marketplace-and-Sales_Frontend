@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import HasRole from '@/components/HasRole.vue';
+import { apiClient } from '@/api/client';
 import { 
   TrendingUp, 
   ShoppingBag, 
@@ -14,6 +15,7 @@ import {
   ChevronRight,
   Edit3,
   FolderTree,
+  ImagePlus,
   Plus,
   Save,
   Store,
@@ -41,6 +43,18 @@ interface PriceMatrixRow {
   web: number;
   pos: number;
   b2b: number;
+}
+
+interface CatalogCategory {
+  id: string;
+  nombre: string;
+  descripcion?: string;
+}
+
+interface PendingImage {
+  name: string;
+  dataUrl: string;
+  size: number;
 }
 
 const kpis = ref({
@@ -101,8 +115,15 @@ const isProductModalOpen = ref(false);
 const selectedProductCategory = ref('');
 const productName = ref('');
 const productSku = ref('');
+const productBrand = ref('');
+const productDescription = ref('');
+const productPrice = ref<number | null>(null);
 const productAttributeFields = ref<AttributeField[]>([]);
-const savedProducts = ref<Array<{ name: string; sku: string; categoryId: string; attributes: Record<string, string> }>>([]);
+const catalogCategories = ref<CatalogCategory[]>([]);
+const pendingImages = ref<PendingImage[]>([]);
+const imageInput = ref<HTMLInputElement | null>(null);
+const isSavingProduct = ref(false);
+const productFormMessage = ref('');
 const priceProducts = ref([
   { id: 'monitor-lg', name: 'Monitor LG UltraGear 27"', sku: 'MON-LG-27GP' },
   { id: 'laptop-dell', name: 'Laptop Dell XPS 15', sku: 'LAP-DELL-XPS15' },
@@ -220,16 +241,62 @@ function openProductModal() {
   isProductModalOpen.value = true;
   productName.value = '';
   productSku.value = '';
+  productBrand.value = '';
+  productDescription.value = '';
+  productPrice.value = null;
   selectedProductCategory.value = '';
   productAttributeFields.value = [];
+  pendingImages.value = [];
+  productFormMessage.value = '';
 }
 
 function updateProductCategory(categoryId: string) {
   selectedProductCategory.value = categoryId;
-  productAttributeFields.value = (attributeTemplates[categoryId] || []).map((field) => ({
+  const category = catalogCategories.value.find((item) => item.id === categoryId);
+  const templateKey = category?.nombre.toLowerCase().includes('laptop') ? 'laptops'
+    : category?.nombre.toLowerCase().includes('monitor') ? 'monitors'
+    : category?.nombre.toLowerCase().includes('audio') ? 'audio-video'
+    : category?.nombre.toLowerCase().includes('teclado') || category?.nombre.toLowerCase().includes('mouse') ? 'keyboards-mice'
+    : category?.nombre.toLowerCase().includes('red') ? 'networking'
+    : '';
+  productAttributeFields.value = (attributeTemplates[templateKey] || []).map((field) => ({
     ...field,
     value: ''
   }));
+}
+
+function formatImageSize(bytes: number) {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function addProductImages(event: Event) {
+  const files = Array.from((event.target as HTMLInputElement).files || []);
+  const remainingSlots = 5 - pendingImages.value.length;
+  const validFiles = files.slice(0, remainingSlots).filter((file) => file.size <= 5 * 1024 * 1024 && ['image/jpeg', 'image/png', 'image/webp'].includes(file.type));
+  if (validFiles.length !== files.length) {
+    productFormMessage.value = 'Solo se aceptan hasta 5 imágenes JPEG, PNG o WebP de máximo 5 MB.';
+  }
+  const images = await Promise.all(validFiles.map((file) => new Promise<PendingImage>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, dataUrl: String(reader.result), size: file.size });
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  })));
+  pendingImages.value.push(...images);
+  if (imageInput.value) imageInput.value.value = '';
+}
+
+function removeProductImage(index: number) {
+  pendingImages.value.splice(index, 1);
+}
+
+async function loadCatalogCategories() {
+  try {
+    const response = await apiClient.get<CatalogCategory[]>('/api/v1/catalogo/categorias');
+    catalogCategories.value = response.data;
+  } catch {
+    productFormMessage.value = 'No fue posible cargar las categorías del catálogo.';
+  }
 }
 
 function addCustomAttribute() {
@@ -246,19 +313,42 @@ function removeAttribute(fieldId: string) {
   productAttributeFields.value = productAttributeFields.value.filter((field) => field.id !== fieldId);
 }
 
-function saveProduct() {
-  if (!productName.value.trim() || !productSku.value.trim() || !selectedProductCategory.value) return;
+async function saveProduct() {
+  if (!productName.value.trim() || !productSku.value.trim() || !selectedProductCategory.value || productPrice.value === null) {
+    productFormMessage.value = 'Completa nombre, SKU, categoría y precio antes de guardar.';
+    return;
+  }
+  isSavingProduct.value = true;
+  productFormMessage.value = '';
   const attributes = productAttributeFields.value.reduce<Record<string, string>>((result, field) => {
     if (field.label.trim()) result[field.label.trim()] = field.value;
     return result;
   }, {});
-  savedProducts.value.push({
-    name: productName.value.trim(),
-    sku: productSku.value.trim(),
-    categoryId: selectedProductCategory.value,
-    attributes
-  });
-  isProductModalOpen.value = false;
+  try {
+    const response = await apiClient.post('/api/v1/catalogo/productos', {
+      sku: productSku.value.trim(),
+      nombre: productName.value.trim(),
+      marca: productBrand.value.trim() || null,
+      descripcion: productDescription.value.trim() || null,
+      categoria_id: selectedProductCategory.value,
+      precio: productPrice.value,
+      variantes: [{
+        sku: `${productSku.value.trim()}-BASE`,
+        nombre_variante: 'Configuración principal',
+        atributos: attributes,
+        precio: productPrice.value,
+        precio_costo: 0
+      }],
+      imagenes: pendingImages.value.map((image) => ({ data_url: image.dataUrl, nombre: image.name }))
+    });
+    priceProducts.value.unshift({ id: response.data.id, name: response.data.nombre, sku: response.data.sku });
+    selectedPriceProduct.value = response.data.id;
+    isProductModalOpen.value = false;
+  } catch (error: any) {
+    productFormMessage.value = error.response?.data?.detail || 'No se pudo guardar el producto en el catálogo.';
+  } finally {
+    isSavingProduct.value = false;
+  }
 }
 
 function formatPrice(value: number) {
@@ -271,6 +361,8 @@ function savePriceMatrix() {
     minute: '2-digit'
   });
 }
+
+onMounted(loadCatalogCategories);
 </script>
 
 <template>
@@ -656,7 +748,20 @@ function savePriceMatrix() {
               <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">SKU</span>
               <input v-model="productSku" type="text" required placeholder="Ej. LAP-LEN-T14" class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none uppercase" />
             </label>
+            <label class="block space-y-1.5">
+              <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Marca</span>
+              <input v-model="productBrand" type="text" placeholder="Ej. Lenovo" class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none" />
+            </label>
+            <label class="block space-y-1.5">
+              <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Precio web (BOB)</span>
+              <input v-model.number="productPrice" type="number" min="0" step="0.01" required placeholder="0.00" class="w-full px-3 py-2.5 text-sm font-semibold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none" />
+            </label>
           </div>
+
+          <label class="block space-y-1.5">
+            <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Descripción</span>
+            <textarea v-model="productDescription" rows="2" placeholder="Describe las características principales del producto" class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none" />
+          </label>
 
           <label class="block space-y-1.5">
             <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Categoría</span>
@@ -667,9 +772,36 @@ function savePriceMatrix() {
               @change="updateProductCategory(($event.target as HTMLSelectElement).value)"
             >
               <option value="">Selecciona una categoría</option>
-              <option v-for="category in categoryOptions" :key="category.id" :value="category.id">{{ category.name }}</option>
+              <option v-for="category in catalogCategories" :key="category.id" :value="category.id">{{ category.nombre }}</option>
             </select>
           </label>
+
+          <section class="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+            <div class="p-4 bg-slate-50 dark:bg-slate-800/60 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <h3 class="text-sm font-bold text-slate-800 dark:text-slate-100">Imágenes del producto</h3>
+                <p class="text-[11px] text-slate-500 mt-1">Hasta 5 archivos JPEG, PNG o WebP. Máximo 5 MB por imagen.</p>
+              </div>
+              <button type="button" class="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white border border-slate-300 hover:border-blue-400 text-xs font-semibold text-slate-700" @click="imageInput?.click()">
+                <ImagePlus class="w-4 h-4 text-blue-600" />
+                Añadir imágenes
+              </button>
+              <input ref="imageInput" class="hidden" type="file" accept="image/jpeg,image/png,image/webp" multiple @change="addProductImages" />
+            </div>
+            <div v-if="pendingImages.length" class="p-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div v-for="(image, index) in pendingImages" :key="image.dataUrl" class="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-100 aspect-square group">
+                <img :src="image.dataUrl" :alt="image.name" class="w-full h-full object-cover" />
+                <div class="absolute inset-x-0 bottom-0 p-2 bg-slate-950/75 text-white">
+                  <p class="truncate text-[10px] font-semibold">{{ image.name }}</p>
+                  <p class="text-[10px] text-slate-300">{{ formatImageSize(image.size) }}</p>
+                </div>
+                <button type="button" class="absolute top-2 right-2 p-1.5 rounded-md bg-white text-rose-600 shadow-sm opacity-0 group-hover:opacity-100" :aria-label="`Eliminar ${image.name}`" @click="removeProductImage(index)">
+                  <X class="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+            <div v-else class="p-6 text-center text-xs text-slate-400">Agrega una imagen para mostrar este producto en Marketplace.</div>
+          </section>
 
           <div class="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
             <div class="p-4 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between gap-3">
@@ -706,11 +838,12 @@ function savePriceMatrix() {
 
           <div class="flex justify-end gap-2 pt-1">
             <button type="button" class="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800" @click="isProductModalOpen = false">Cancelar</button>
-            <button type="submit" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm">
+            <button type="submit" :disabled="isSavingProduct" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-semibold shadow-sm">
               <Save class="w-3.5 h-3.5" />
-              Guardar producto
+              {{ isSavingProduct ? 'Guardando...' : 'Guardar producto' }}
             </button>
           </div>
+          <p v-if="productFormMessage" class="text-xs font-medium text-rose-600">{{ productFormMessage }}</p>
         </form>
       </div>
     </div>
