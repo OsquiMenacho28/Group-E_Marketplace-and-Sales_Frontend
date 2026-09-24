@@ -96,15 +96,19 @@ async function syncWithSupabase() {
     const res = await apiClient.get('/productos');
     const dbProducts: Producto[] = res.data.productos || [];
 
-    // Actualizar imágenes y productos con los datos reales de Supabase
+    // Actualizar imágenes, nombres, categorías y precios con los datos reales de Supabase
     dbProducts.forEach(dbp => {
       const match = products.value.find(p => p.sku === dbp.sku || p.id === dbp.id);
       const gallery = (dbp.imagenes_producto || []).sort((a, b) => a.orden - b.orden);
       const cover = gallery.find(i => i.es_principal) || gallery[0];
+      const realPrice = dbp.precio !== undefined && dbp.precio !== null ? Number(dbp.precio) : null;
 
       if (match) {
         match.id = dbp.id;
         match.nombre = dbp.nombre;
+        if (realPrice !== null && realPrice > 0) {
+          match.precio = realPrice;
+        }
         if (dbp.categorias?.nombre) {
           match.categoria = dbp.categorias.nombre;
         }
@@ -113,13 +117,13 @@ async function syncWithSupabase() {
         }
         match.galleryImages = gallery;
       } else {
-        // Nuevo producto agregado desde el Admin
+        // Nuevo producto agregado desde el Admin o Supabase
         products.value.unshift({
           id: dbp.id,
           sku: dbp.sku,
           nombre: dbp.nombre,
           categoria: dbp.categorias?.nombre || 'General',
-          precio: 1250.00,
+          precio: realPrice !== null && realPrice > 0 ? realPrice : 1250.00,
           rating: 5.0,
           stock: 10,
           badge: 'Nuevo',

@@ -30,7 +30,7 @@ export function createApiMiddleware() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // GET /productos - Lista de productos con categoría y cantidad de imágenes
+  // GET /productos - Lista de productos con categoría, variantes (precio) y cantidad de imágenes
   router.get('/productos', async (_req: Request, res: Response) => {
     try {
       const { data: productos, error } = await supabaseAdmin
@@ -45,7 +45,8 @@ export function createApiMiddleware() {
           categoria_id,
           created_at,
           categorias ( id, nombre ),
-          imagenes_producto ( id, url, es_principal, orden )
+          imagenes_producto ( id, url, es_principal, orden ),
+          variantes ( id, sku, nombre_variante, precio, precio_costo, codigo_barras )
         `)
         .order('created_at', { ascending: false });
 
@@ -54,9 +55,58 @@ export function createApiMiddleware() {
         return res.status(500).json({ error: error.message });
       }
 
-      res.json({ productos });
+      // Normalizar precio principal para el producto
+      const enriched = (productos || []).map(p => {
+        const principalVariante = p.variantes && p.variantes.length > 0 ? p.variantes[0] : null;
+        return {
+          ...p,
+          precio: principalVariante ? Number(principalVariante.precio) : 0,
+          precio_costo: principalVariante?.precio_costo ? Number(principalVariante.precio_costo) : 0
+        };
+      });
+
+      res.json({ productos: enriched });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Error interno del servidor' });
+    }
+  });
+
+  // GET /productos/:id - Obtener un producto específico
+  router.get('/productos/:id', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { data: producto, error } = await supabaseAdmin
+        .from('productos')
+        .select(`
+          id,
+          sku,
+          nombre,
+          descripcion,
+          marca,
+          estado,
+          categoria_id,
+          created_at,
+          categorias ( id, nombre ),
+          imagenes_producto ( id, url, es_principal, orden ),
+          variantes ( id, sku, nombre_variante, precio, precio_costo, codigo_barras )
+        `)
+        .eq('id', id)
+        .single();
+
+      if (error || !producto) {
+        return res.status(404).json({ error: 'Producto no encontrado.' });
+      }
+
+      const principalVariante = producto.variantes && producto.variantes.length > 0 ? producto.variantes[0] : null;
+      res.json({
+        producto: {
+          ...producto,
+          precio: principalVariante ? Number(principalVariante.precio) : 0,
+          precio_costo: principalVariante?.precio_costo ? Number(principalVariante.precio_costo) : 0
+        }
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -75,29 +125,231 @@ export function createApiMiddleware() {
     }
   });
 
-  // POST /productos - Crear nuevo producto
+  // POST /productos - Crear nuevo producto (Subtarea KAN-306 / KAN-287) y guardar su precio en tabla variantes
   router.post('/productos', async (req: Request, res: Response) => {
     try {
-      const { sku, nombre, descripcion, marca, categoria_id, estado } = req.body;
+      const { sku, nombre, descripcion, marca, categoria_id, estado, precio, precio_costo } = req.body;
       if (!sku || !nombre) {
         return res.status(400).json({ error: 'El SKU y el nombre son requeridos.' });
       }
 
-      const { data, error } = await supabaseAdmin
+      const cleanSku = String(sku).trim().toUpperCase();
+
+      // Validación de unicidad de SKU (KAN-287)
+      const { data: existingSku } = await supabaseAdmin
+        .from('productos')
+        .select('id')
+        .eq('sku', cleanSku)
+        .maybeSingle();
+
+      if (existingSku) {
+        return res.status(409).json({ error: `El SKU "${cleanSku}" ya está registrado por otro producto.` });
+      }
+
+      // Mapear estado al ENUM de postgres: publicado, borrador, inactivo, descontinuado
+      let dbEstado = (estado || 'publicado').toLowerCase();
+      if (dbEstado === 'archivado') dbEstado = 'descontinuado';
+
+      const { data: nuevoProducto, error } = await supabaseAdmin
         .from('productos')
         .insert([{
+          sku: cleanSku,
+          nombre: String(nombre).trim(),
+          descripcion: descripcion ? String(descripcion).trim() : '',
+          marca: marca ? String(marca).trim() : '',
+          categoria_id: categoria_id || null,
+          estado: dbEstado
+        }])
+        .select(`
+          id,
           sku,
           nombre,
-          descripcion: descripcion || '',
-          marca: marca || '',
-          categoria_id: categoria_id || null,
-          estado: estado || 'publicado'
+          descripcion,
+          marca,
+          estado,
+          categoria_id,
+          created_at,
+          categorias ( id, nombre )
+        `)
+        .single();
+
+      if (error) return res.status(500).json({ error: error.message });
+
+      // Guardar precio en la tabla 'variantes' (Arquitectura relacional Supabase)
+      const numericPrice = Number(precio) || 0;
+      const numericCost = Number(precio_costo) || Math.round(numericPrice * 0.7);
+
+      const { data: varianteData } = await supabaseAdmin
+        .from('variantes')
+        .insert([{
+          producto_id: nuevoProducto.id,
+          sku: `${cleanSku}-STD`,
+          nombre_variante: 'Estándar',
+          precio: numericPrice,
+          precio_costo: numericCost,
+          atributos: {}
         }])
         .select()
         .single();
 
+      res.status(201).json({
+        producto: {
+          ...nuevoProducto,
+          precio: numericPrice,
+          precio_costo: numericCost,
+          variantes: varianteData ? [varianteData] : []
+        }
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PUT /productos/:id - Actualizar producto existente y sincronizar precio en variantes (KAN-306 / KAN-307)
+  router.put('/productos/:id', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { sku, nombre, descripcion, marca, categoria_id, estado, precio, precio_costo } = req.body;
+
+      if (!sku || !nombre) {
+        return res.status(400).json({ error: 'El SKU y el nombre son obligatorios.' });
+      }
+
+      const cleanSku = String(sku).trim().toUpperCase();
+
+      // Verificar unicidad de SKU excluyendo el producto actual
+      const { data: duplicateSku } = await supabaseAdmin
+        .from('productos')
+        .select('id')
+        .eq('sku', cleanSku)
+        .neq('id', id)
+        .maybeSingle();
+
+      if (duplicateSku) {
+        return res.status(409).json({ error: `El SKU "${cleanSku}" ya pertenece a otro producto.` });
+      }
+
+      let dbEstado = (estado || 'publicado').toLowerCase();
+      if (dbEstado === 'archivado') dbEstado = 'descontinuado';
+
+      const { data: updated, error } = await supabaseAdmin
+        .from('productos')
+        .update({
+          sku: cleanSku,
+          nombre: String(nombre).trim(),
+          descripcion: descripcion ? String(descripcion).trim() : '',
+          marca: marca ? String(marca).trim() : '',
+          categoria_id: categoria_id || null,
+          estado: dbEstado
+        })
+        .eq('id', id)
+        .select(`
+          id,
+          sku,
+          nombre,
+          descripcion,
+          marca,
+          estado,
+          categoria_id,
+          created_at,
+          categorias ( id, nombre ),
+          imagenes_producto ( id, url, es_principal, orden )
+        `)
+        .single();
+
       if (error) return res.status(500).json({ error: error.message });
-      res.status(201).json({ producto: data });
+
+      // Actualizar o crear variante con el precio
+      const numericPrice = Number(precio) || 0;
+      const numericCost = Number(precio_costo) || Math.round(numericPrice * 0.7);
+
+      const { data: existingVars } = await supabaseAdmin
+        .from('variantes')
+        .select('id')
+        .eq('producto_id', id);
+
+      if (existingVars && existingVars.length > 0) {
+        await supabaseAdmin
+          .from('variantes')
+          .update({
+            precio: numericPrice,
+            precio_costo: numericCost
+          })
+          .eq('id', existingVars[0].id);
+      } else {
+        await supabaseAdmin
+          .from('variantes')
+          .insert([{
+            producto_id: id,
+            sku: `${cleanSku}-STD`,
+            nombre_variante: 'Estándar',
+            precio: numericPrice,
+            precio_costo: numericCost,
+            atributos: {}
+          }]);
+      }
+
+      res.json({
+        producto: {
+          ...updated,
+          precio: numericPrice,
+          precio_costo: numericCost
+        },
+        message: 'Producto y precio actualizados con éxito.'
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PATCH /productos/:id/estado - Cambio rápido de ciclo de vida (publicado, borrador, inactivo, descontinuado)
+  router.patch('/productos/:id/estado', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { estado } = req.body;
+      const validStates = ['publicado', 'borrador', 'archivado', 'descontinuado', 'inactivo'];
+
+      if (!estado || !validStates.includes(estado.toLowerCase())) {
+        return res.status(400).json({ error: `Estado inválido. Opciones válidas: ${validStates.join(', ')}` });
+      }
+
+      let dbEstado = estado.toLowerCase();
+      if (dbEstado === 'archivado') dbEstado = 'descontinuado';
+
+      const { data: updated, error } = await supabaseAdmin
+        .from('productos')
+        .update({ estado: dbEstado })
+        .eq('id', id)
+        .select('id, sku, nombre, estado')
+        .single();
+
+      if (error) return res.status(500).json({ error: error.message });
+      res.json({ producto: updated, message: `Estado cambiado a ${estado}` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /productos/:id - Eliminar producto del catálogo (KAN-291)
+  router.delete('/productos/:id', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+
+      // 1. Eliminar imágenes asociadas
+      await supabaseAdmin
+        .from('imagenes_producto')
+        .delete()
+        .eq('producto_id', id);
+
+      // 2. Eliminar el producto
+      const { error } = await supabaseAdmin
+        .from('productos')
+        .delete()
+        .eq('id', id);
+
+      if (error) return res.status(500).json({ error: error.message });
+
+      res.json({ success: true, message: 'Producto eliminado del catálogo.' });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
