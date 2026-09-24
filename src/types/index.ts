@@ -45,10 +45,12 @@ export interface Carrito {
   total: number;
 }
 
+export type UserRole = 'cliente' | 'cajero' | 'administrador' | 'gerente_comercial';
+
 export interface UserProfile {
   id: string;
   nombre_completo: string;
   email: string;
-  role: 'cliente' | 'cajero' | 'administrador' | 'gerente_comercial';
+  role: UserRole;
   puntos_saldo: number;
 }
