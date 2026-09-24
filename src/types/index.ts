@@ -16,6 +16,24 @@ export interface Variante {
   codigo_barras?: string;
 }
 
+export interface ImagenProducto {
+  id: string;
+  producto_id: string;
+  variante_id?: string | null;
+  url: string;
+  thumbnailUrl?: string;
+  es_principal: boolean;
+  orden: number;
+  created_at?: string;
+  stats?: {
+    nombreOriginal?: string;
+    pesoOriginalBytes?: number;
+    pesoOptimizadoBytes?: number;
+    pesoThumbnailBytes?: number;
+    porcentajeAhorro?: number;
+  };
+}
+
 export interface Producto {
   id: string;
   sku: string;
@@ -24,7 +42,10 @@ export interface Producto {
   marca?: string;
   categoria_id: string;
   estado: string;
-  variantes: Variante[];
+  variantes?: Variante[];
+  categorias?: { id: string; nombre: string };
+  imagenes_producto?: ImagenProducto[];
+  precio?: number;
 }
 
 export interface ItemCarrito {

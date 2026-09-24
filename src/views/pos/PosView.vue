@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
+import { apiClient } from '@/api/client';
+import type { Producto } from '@/types';
 import { 
   Scan, 
   Trash2, 
@@ -25,6 +27,28 @@ const skuInput = ref('');
 const cajaAbierta = ref(true);
 const sucursalNombre = ref('Sucursal Central - La Paz');
 const cajeroNombre = ref('Cajero: Oscar Menacho (Turno Mañana)');
+const catalogoDb = ref<Producto[]>([]);
+
+// Cargar catálogo de Supabase para obtener precios reales al escanear
+async function loadPosCatalog() {
+  try {
+    const res = await apiClient.get('/productos');
+    catalogoDb.value = res.data.productos || [];
+    // Actualizar precios de ítems iniciales si coinciden con la BD
+    cartItems.value.forEach(item => {
+      const match = catalogoDb.value.find(p => p.sku === item.sku);
+      if (match && match.precio) {
+        item.precio = Number(match.precio);
+      }
+    });
+  } catch (err) {
+    console.error('Error cargando catálogo en POS:', err);
+  }
+}
+
+onMounted(() => {
+  loadPosCatalog();
+});
 
 const cartItems = ref<PosItem[]>([
   { id: '1', sku: 'LAP-DELL-XPS15', nombre: 'Laptop Dell XPS 15', precio: 8999.00, cantidad: 1 },
@@ -46,13 +70,22 @@ const isReceiptReady = ref(false);
 function addItemByBarcode() {
   if (!skuInput.value.trim()) return;
   const sku = skuInput.value.trim().toUpperCase();
-  cartItems.value.push({
-    id: Date.now().toString(),
-    sku: sku,
-    nombre: `Artículo Escaneado [${sku}]`,
-    precio: 150.00,
-    cantidad: 1
-  });
+  
+  // Buscar en el catálogo real de Supabase
+  const match = catalogoDb.value.find(p => p.sku === sku);
+  const existing = cartItems.value.find(i => i.sku === sku);
+
+  if (existing) {
+    existing.cantidad += 1;
+  } else {
+    cartItems.value.push({
+      id: Date.now().toString(),
+      sku: sku,
+      nombre: match ? match.nombre : `Artículo Escaneado [${sku}]`,
+      precio: match && match.precio ? Number(match.precio) : 150.00,
+      cantidad: 1
+    });
+  }
   skuInput.value = '';
 }
 
