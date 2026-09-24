@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+const API_BASE_URL = 
+  import.meta.env.VITE_API_GATEWAY_URL || 
+  import.meta.env.VITE_API_URL || 
+  'http://localhost:8000';
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -24,7 +27,14 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      console.warn('Sesión expirada o token no válido.');
+      // Si la petición no era de login/registro, advertir de sesión expirada
+      const url = error.config?.url || '';
+      if (!url.includes('/login') && !url.includes('/registro')) {
+        console.warn('Sesión expirada o token no válido. Limpiando almacenamiento.');
+        localStorage.removeItem('maxiconecta_token');
+        localStorage.removeItem('maxiconecta_refresh_token');
+        localStorage.removeItem('maxiconecta_user');
+      }
     }
     return Promise.reject(error);
   }

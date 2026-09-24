@@ -70,10 +70,50 @@ export type UserRole = 'cliente' | 'cajero' | 'administrador' | 'gerente_comerci
 
 export interface UserProfile {
   id: string;
+  user_id?: string;
   nombre_completo: string;
   email: string;
+  telefono?: string;
+  nit_ci?: string;
+  razon_social?: string;
+  tipo_cliente?: string;
   role: UserRole;
+  sucursal_id?: string | null;
   puntos_saldo: number;
+  mensaje?: string;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+  user: UserProfile;
+}
+
+export interface LoginPayload {
+  email: string;
+  password: string;
+}
+
+export interface RegisterPayload {
+  nombre_completo: string;
+  email: string;
+  password: string;
+  telefono?: string;
+  nit_ci?: string;
+  razon_social?: string;
+  tipo_cliente?: string;
+}
+
+export interface OrderSummary {
+  id: string;
+  codigo: string;
+  fecha: string;
+  total: number;
+  estado: 'pendiente' | 'confirmada' | 'en_preparacion' | 'despachada' | 'entregada' | 'cancelada';
+  items_count: number;
+  metodo_pago: string;
 }
 
 export interface WishlistItem {

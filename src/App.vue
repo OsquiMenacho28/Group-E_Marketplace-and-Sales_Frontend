@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { useCartStore } from '@/stores/cart';
 import { useAuthStore } from '@/stores/auth';
+import AuthModal from '@/components/auth/AuthModal.vue';
 import { 
   ShoppingBag, 
   Store, 
@@ -12,12 +13,18 @@ import {
   Check, 
   UserCircle, 
   ChevronRight,
-  ShieldAlert
+  ShieldAlert,
+  LogIn,
+  Sparkles,
+  LogOut,
+  User,
+  ChevronDown
 } from 'lucide-vue-next';
 
 const route = useRoute();
 const cartStore = useCartStore();
 const authStore = useAuthStore();
+const isUserMenuOpen = ref(false);
 
 const cuponInput = ref('');
 const cuponMsg = ref('');
@@ -31,12 +38,17 @@ function canjearCupon() {
     cuponMsg.value = 'Cupón inválido. Prueba con MAXI10';
   }
 }
+
+function handleLogout() {
+  authStore.logout();
+  isUserMenuOpen.value = false;
+}
 </script>
 
 <template>
   <div class="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
     <!-- Navbar Superior Profesional -->
-    <header class="sticky top-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shadow-sm">
+    <header class="sticky top-0 z-40 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         <!-- Logo y Marca -->
         <div class="flex items-center gap-6">
@@ -53,7 +65,7 @@ function canjearCupon() {
           </router-link>
 
           <!-- Selector de Portales (Marketplace / POS / Admin) -->
-          <nav class="hidden md:flex items-center gap-1 bg-slate-100/90 dark:bg-slate-800/90 p-1 rounded-xl ring-1 ring-slate-200/70 dark:ring-slate-700/70">
+          <nav class="hidden md:flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
             <router-link
               to="/marketplace"
               :class="[
@@ -92,21 +104,108 @@ function canjearCupon() {
           </nav>
         </div>
 
-        <!-- Acciones Derecha (Rol Selector & Botón Carrito) -->
+        <!-- Acciones Derecha (Identidad/Login & Carrito) -->
         <div class="flex items-center gap-3">
-          <!-- Selector Rápido de Rol (Para pruebas y presentación) -->
-          <div class="hidden sm:flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg text-xs ring-1 ring-slate-200/70 dark:ring-slate-700/70">
-            <UserCircle class="w-4 h-4 text-slate-400" />
-            <select
-              :value="authStore.userRole"
-              @change="(e) => authStore.setRole((e.target as HTMLSelectElement).value as any)"
-              class="bg-transparent text-xs font-semibold focus:outline-none cursor-pointer text-slate-700 dark:text-slate-200"
+          <!-- Estado No Autenticado (Invitado) -->
+          <div v-if="!authStore.isAuthenticated" class="flex items-center gap-2">
+            <button
+              @click="authStore.openAuthModal('login')"
+              class="px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors flex items-center gap-1.5"
             >
-              <option value="administrador">Rol: Administrador</option>
-              <option value="cajero">Rol: Cajero</option>
-              <option value="gerente_comercial">Rol: Gerente Comercial</option>
-              <option value="cliente">Rol: Cliente</option>
-            </select>
+              <LogIn class="w-3.5 h-3.5" /> Iniciar Sesión
+            </button>
+            <button
+              @click="authStore.openAuthModal('register')"
+              class="hidden sm:flex items-center gap-1 px-3 py-1.5 text-xs font-bold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl shadow-md transition-all"
+            >
+              <Sparkles class="w-3.5 h-3.5" /> Registrarse (+50 pts)
+            </button>
+          </div>
+
+          <!-- Estado Autenticado -->
+          <div v-else class="flex items-center gap-2">
+            <!-- Badge de Puntos para Cliente -->
+            <router-link
+              to="/mi-cuenta"
+              v-if="authStore.userRole === 'cliente'"
+              class="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900/60 rounded-xl text-xs font-bold hover:bg-amber-100 transition-colors"
+              title="Ver mis puntos acumulados"
+            >
+              <Sparkles class="w-3.5 h-3.5 text-amber-500" />
+              <span>{{ authStore.pointsBalance }} pts</span>
+            </router-link>
+
+            <!-- Botón / Menú de Usuario -->
+            <div class="relative">
+              <button
+                @click="isUserMenuOpen = !isUserMenuOpen"
+                class="flex items-center gap-2 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/80 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold transition-colors border border-slate-200/60 dark:border-slate-700"
+              >
+                <div class="w-6 h-6 rounded-lg bg-blue-600 text-white flex items-center justify-center text-[10px] font-black shadow-sm">
+                  {{ authStore.user?.nombre_completo.charAt(0).toUpperCase() || 'U' }}
+                </div>
+                <span class="max-w-[110px] truncate hidden sm:inline">{{ authStore.user?.nombre_completo.split(' ')[0] }}</span>
+                <span 
+                  :class="[
+                    'text-[9px] uppercase font-extrabold px-1.5 py-0.5 rounded',
+                    authStore.userRole === 'administrador' 
+                      ? 'bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300'
+                      : authStore.userRole === 'cajero'
+                      ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
+                  ]"
+                >
+                  {{ authStore.userRole }}
+                </span>
+                <ChevronDown class="w-3.5 h-3.5 text-slate-400" />
+              </button>
+
+              <!-- Dropdown Flotante -->
+              <div
+                v-if="isUserMenuOpen"
+                class="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-2 z-50 text-xs space-y-1 animate-in fade-in"
+              >
+                <div class="p-2 border-b border-slate-100 dark:border-slate-800 mb-1">
+                  <p class="font-bold text-slate-900 dark:text-white truncate">{{ authStore.user?.nombre_completo }}</p>
+                  <p class="text-[10px] text-slate-400 truncate">{{ authStore.user?.email }}</p>
+                </div>
+
+                <router-link
+                  to="/mi-cuenta"
+                  @click="isUserMenuOpen = false"
+                  class="flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold"
+                >
+                  <User class="w-3.5 h-3.5 text-blue-500" /> Mi Cuenta y Compras
+                </router-link>
+
+                <router-link
+                  v-if="authStore.hasRole(['cajero', 'administrador'])"
+                  to="/pos"
+                  @click="isUserMenuOpen = false"
+                  class="flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold"
+                >
+                  <Store class="w-3.5 h-3.5 text-emerald-500" /> Terminal POS
+                </router-link>
+
+                <router-link
+                  v-if="authStore.hasRole(['administrador', 'gerente_comercial'])"
+                  to="/admin"
+                  @click="isUserMenuOpen = false"
+                  class="flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold"
+                >
+                  <LayoutDashboard class="w-3.5 h-3.5 text-indigo-500" /> Panel Administrador
+                </router-link>
+
+                <div class="border-t border-slate-100 dark:border-slate-800 my-1"></div>
+
+                <button
+                  @click="handleLogout"
+                  class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 font-semibold"
+                >
+                  <LogOut class="w-3.5 h-3.5" /> Cerrar Sesión
+                </button>
+              </div>
+            </div>
           </div>
 
           <!-- Botón Carrito Flotante (RF-13) -->
@@ -235,5 +334,8 @@ function canjearCupon() {
         </p>
       </div>
     </footer>
+
+    <!-- Modal de Autenticación Unificado (Login / Registro / Cuentas Demo) -->
+    <AuthModal />
   </div>
 </template>
