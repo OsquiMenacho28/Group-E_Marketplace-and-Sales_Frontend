@@ -32,8 +32,8 @@ const catalogoDb = ref<Producto[]>([]);
 // Cargar catálogo de Supabase para obtener precios reales al escanear
 async function loadPosCatalog() {
   try {
-    const res = await apiClient.get('/productos');
-    catalogoDb.value = res.data.productos || [];
+    const res = await apiClient.get('/api/v1/catalogo/productos');
+    catalogoDb.value = Array.isArray(res.data) ? res.data : res.data.productos || [];
     // Actualizar precios de ítems iniciales si coinciden con la BD
     cartItems.value.forEach(item => {
       const match = catalogoDb.value.find(p => p.sku === item.sku);
@@ -121,17 +121,18 @@ function resetPos() {
 </script>
 
 <template>
-  <div class="h-[calc(100vh-8rem)] flex flex-col gap-4">
+  <div class="min-h-[calc(100vh-8rem)] flex flex-col gap-5">
     <!-- Header de Caja y Turno (RF-09) -->
-    <div class="bg-slate-900 text-white px-5 py-3 rounded-xl flex justify-between items-center shadow-md">
+    <div class="relative overflow-hidden bg-slate-950 text-white px-5 py-4 rounded-xl flex flex-col sm:flex-row justify-between gap-4 sm:items-center shadow-xl shadow-slate-900/20">
+      <div class="absolute inset-0 opacity-40 surface-grid" />
       <div class="flex items-center gap-3">
-        <Store class="w-5 h-5 text-cyan-400" />
+        <span class="relative w-10 h-10 rounded-lg bg-cyan-400/15 border border-cyan-300/20 flex items-center justify-center"><Store class="w-5 h-5 text-cyan-300" /></span>
         <div>
           <h2 class="text-sm font-bold">{{ sucursalNombre }}</h2>
           <p class="text-xs text-slate-400">{{ cajeroNombre }}</p>
         </div>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="relative flex items-center gap-3">
         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
           <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Caja Abierta
         </span>
@@ -142,9 +143,9 @@ function resetPos() {
     </div>
 
     <!-- Contenido Principal POS -->
-    <div class="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-6 overflow-hidden">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <!-- Columna Izquierda: Escáner y Tabla de Ítems -->
-      <div class="lg:col-span-2 flex flex-col bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-4 overflow-hidden">
+      <div class="lg:col-span-2 flex flex-col min-h-[520px] bg-white/95 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-lg shadow-slate-300/20 dark:shadow-none p-4 overflow-hidden">
         <!-- Input Barcode -->
         <form @submit.prevent="addItemByBarcode" class="flex gap-2 mb-4">
           <div class="relative flex-1">
@@ -157,7 +158,7 @@ function resetPos() {
               class="w-full pl-10 pr-4 py-2.5 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-600 focus:outline-none font-mono"
             />
           </div>
-          <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg font-medium text-sm">
+          <button type="submit" class="bg-teal-700 hover:bg-teal-800 text-white px-5 py-2.5 rounded-lg font-bold text-sm shadow-sm">
             Agregar
           </button>
         </form>
@@ -219,7 +220,7 @@ function resetPos() {
       </div>
 
       <!-- Columna Derecha: Panel de Cobro y Totales -->
-      <div class="flex flex-col justify-between bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-5">
+      <div class="flex flex-col justify-between bg-white/95 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-lg shadow-slate-300/20 dark:shadow-none p-5">
         <div class="space-y-4">
           <h3 class="text-base font-bold text-slate-800 dark:text-slate-100 border-b border-slate-100 dark:border-slate-800 pb-2">
             Resumen de Cobro
@@ -241,9 +242,9 @@ function resetPos() {
           </div>
 
           <!-- Total Destacado -->
-          <div class="bg-blue-50 dark:bg-blue-950/40 p-4 rounded-xl border border-blue-200 dark:border-blue-900 text-center">
-            <span class="text-xs uppercase font-bold text-blue-600 dark:text-blue-400 tracking-wider">Total a Cobrar</span>
-            <div class="text-3xl font-extrabold text-blue-700 dark:text-blue-300 mt-1">
+          <div class="bg-gradient-to-br from-teal-700 to-cyan-800 p-5 rounded-xl border border-teal-500/40 text-center shadow-lg shadow-teal-900/15">
+            <span class="text-xs uppercase font-bold text-teal-100 tracking-wider">Total a cobrar</span>
+            <div class="text-3xl font-black text-white mt-1">
               BOB {{ total.toFixed(2) }}
             </div>
           </div>
@@ -254,7 +255,7 @@ function resetPos() {
           <button
             @click="isPayModalOpen = true"
             :disabled="cartItems.length === 0"
-            class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 active:scale-98"
+            class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-lg shadow-lg shadow-emerald-900/15 flex items-center justify-center gap-2 active:scale-98"
           >
             <Banknote class="w-5 h-5" /> Cobrar Transacción [F12]
           </button>

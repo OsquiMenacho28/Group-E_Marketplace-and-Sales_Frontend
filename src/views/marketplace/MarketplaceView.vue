@@ -97,8 +97,8 @@ const products = ref<MarketplaceProduct[]>([
 // Sincronizar con base de datos Supabase
 async function syncWithSupabase() {
   try {
-    const res = await apiClient.get('/productos');
-    const dbProducts: Producto[] = res.data.productos || [];
+    const res = await apiClient.get('/api/v1/catalogo/productos');
+    const dbProducts: Producto[] = Array.isArray(res.data) ? res.data : res.data.productos || [];
 
     // Actualizar imágenes, nombres, categorías y precios con los datos reales de Supabase
     dbProducts.forEach(dbp => {
@@ -171,6 +171,16 @@ const filteredProducts = computed(() => {
   });
 });
 
+const inventorySummary = computed(() => {
+  const units = filteredProducts.value.reduce((total, product) => total + product.stock, 0);
+  return { products: filteredProducts.value.length, units };
+});
+
+function showOffers() {
+  selectedCategory.value = 'Todos';
+  searchQuery.value = '';
+}
+
 function agregarAlCarrito(prod: any) {
   cartStore.addItem({
     variante_id: prod.id,
@@ -196,24 +206,56 @@ function alternarDeseo(prod: MarketplaceProduct) {
 <template>
   <div class="space-y-8">
     <!-- Hero Banner Promocional -->
-    <section class="relative overflow-hidden rounded-2xl bg-gradient-to-r from-blue-700 via-indigo-700 to-slate-900 p-8 md:p-12 text-white shadow-xl">
-      <div class="relative z-10 max-w-2xl space-y-4">
-        <span class="inline-flex items-center gap-1.5 rounded-full bg-blue-500/30 px-3 py-1 text-xs font-semibold tracking-wide backdrop-blur-md border border-blue-400/30">
-          <Tag class="w-3.5 h-3.5 text-cyan-300" /> Catálogo Multimedia en Supabase
-        </span>
-        <h1 class="text-3xl sm:text-5xl font-extrabold tracking-tight leading-tight">
-          Tecnología de Punta con Entrega Inmediata.
-        </h1>
-        <p class="text-slate-200 text-sm sm:text-base">
-          Explora el catálogo unificado de MaxiConecta con imágenes de alta resolución optimizadas con Sharp y almacenadas en Supabase Storage.
-        </p>
+    <section class="relative overflow-hidden rounded-2xl bg-gradient-to-br from-teal-800 via-cyan-800 to-slate-950 p-7 sm:p-10 md:p-14 text-white shadow-2xl surface-grid">
+      <div class="absolute inset-0 bg-[radial-gradient(circle_at_88%_20%,rgba(251,191,36,0.3),transparent_24%),radial-gradient(circle_at_20%_100%,rgba(45,212,191,0.24),transparent_32%)]" />
+      <div class="relative z-10 grid grid-cols-1 lg:grid-cols-[1.4fr_0.6fr] gap-8 items-end">
+        <div class="max-w-2xl space-y-5">
+          <span class="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold tracking-wide backdrop-blur-md border border-white/20">
+            <Sparkles class="w-3.5 h-3.5 text-amber-300" /> Selección tecnológica curada
+          </span>
+          <p class="text-xs font-bold uppercase tracking-[0.18em] text-teal-200">MaxiConecta marketplace</p>
+          <h1 class="display-font text-4xl sm:text-5xl md:text-6xl font-bold leading-[1.03]">
+            Tecnología lista para tu próximo movimiento.
+          </h1>
+          <p class="max-w-xl text-teal-50/85 text-sm sm:text-base leading-relaxed">
+            Compara equipos, encuentra disponibilidad inmediata y compra con la misma experiencia que conecta nuestras sucursales.
+          </p>
+          <div class="flex flex-wrap gap-3 pt-1">
+            <button @click="showOffers" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-300 hover:bg-amber-200 text-slate-950 text-sm font-bold shadow-lg shadow-amber-950/20">
+              Ver catálogo <ChevronRight class="w-4 h-4" />
+            </button>
+            <button @click="selectedCategory = 'Laptops y PCs'" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white/10 hover:bg-white/20 border border-white/20 text-sm font-semibold backdrop-blur-sm">
+              Explorar laptops
+            </button>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3 max-w-sm lg:justify-self-end">
+          <div class="rounded-xl bg-white/10 p-4 border border-white/15 backdrop-blur-sm">
+            <span class="block text-3xl font-black text-amber-300">{{ inventorySummary.products }}</span>
+            <span class="block mt-1 text-[11px] uppercase tracking-wider text-teal-100">productos visibles</span>
+          </div>
+          <div class="rounded-xl bg-white/10 p-4 border border-white/15 backdrop-blur-sm">
+            <span class="block text-3xl font-black text-white">{{ inventorySummary.units }}</span>
+            <span class="block mt-1 text-[11px] uppercase tracking-wider text-teal-100">unidades en stock</span>
+          </div>
+          <div class="col-span-2 rounded-xl bg-slate-950/30 p-4 border border-white/10 flex items-center gap-3">
+            <ShieldCheck class="w-9 h-9 text-teal-200 shrink-0" />
+            <p class="text-xs leading-relaxed text-teal-50">Precios sincronizados con catálogo y disponibilidad por sucursal.</p>
+          </div>
+        </div>
       </div>
-      <div class="absolute -right-10 -bottom-10 w-96 h-96 bg-cyan-500/20 rounded-full blur-3xl pointer-events-none"></div>
     </section>
 
-    <!-- Barra de Filtros y Búsqueda Facetada (RF-06) -->
-    <section class="flex flex-col md:flex-row gap-4 justify-between items-center bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
-      <!-- Input de Búsqueda -->
+    <section class="flex flex-col md:flex-row gap-4 justify-between items-center bg-white/90 dark:bg-slate-900/90 p-4 rounded-xl border border-white shadow-lg shadow-slate-300/30 dark:border-slate-800 dark:shadow-none backdrop-blur-sm">
+      <div class="flex items-center gap-3 w-full md:w-auto">
+        <span class="w-10 h-10 shrink-0 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center">
+          <Filter class="w-4 h-4" />
+        </span>
+        <div>
+          <h2 class="text-sm font-bold text-slate-900 dark:text-white">Encuentra tu próximo equipo</h2>
+          <p class="text-[11px] text-slate-500">{{ inventorySummary.products }} resultados para explorar</p>
+        </div>
+      </div>
       <div class="relative w-full md:w-96">
         <Search class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
         <input
@@ -243,14 +285,14 @@ function alternarDeseo(prod: MarketplaceProduct) {
     </section>
 
     <!-- Grid de Productos -->
-    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+    <section v-if="filteredProducts.length" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
       <article
         v-for="prod in filteredProducts"
         :key="prod.id"
-        class="group flex flex-col bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm hover:shadow-lg transition-all duration-300"
+        class="reveal-up group flex flex-col bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm hover:-translate-y-1 hover:shadow-xl hover:shadow-teal-900/10 transition-all duration-300"
       >
         <!-- Imagen de Portada y Galería -->
-        <div class="relative h-52 bg-slate-100 dark:bg-slate-950 overflow-hidden">
+        <div class="relative h-56 bg-slate-100 dark:bg-slate-950 overflow-hidden">
           <img
             :src="prod.image"
             :alt="prod.nombre"
@@ -270,7 +312,7 @@ function alternarDeseo(prod: MarketplaceProduct) {
             <Heart :class="['w-5 h-5', wishlistStore.estaEnDeseos(prod.id) ? 'fill-current' : '']" />
           </button>
           
-          <span class="absolute top-2.5 left-2.5 bg-blue-600/90 text-white text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
+          <span class="absolute top-2.5 left-2.5 bg-teal-700/90 text-white text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
             {{ prod.badge }}
           </span>
 
@@ -308,14 +350,14 @@ function alternarDeseo(prod: MarketplaceProduct) {
 
           <div class="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
             <div>
-              <span class="text-xs text-slate-400 block">Precio Contado</span>
-              <span class="text-lg font-bold text-slate-900 dark:text-white">
+              <span class="text-[10px] uppercase tracking-wider text-slate-400 block">Precio contado</span>
+              <span class="text-xl font-black text-slate-900 dark:text-white">
                 BOB {{ prod.precio.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}
               </span>
             </div>
             <button
               @click="agregarAlCarrito(prod)"
-              class="p-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-sm active:scale-95 transition-all"
+              class="p-2.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg shadow-sm active:scale-95 transition-all"
               title="Añadir al carrito"
             >
               <ShoppingBag class="w-4 h-4" />
@@ -323,6 +365,13 @@ function alternarDeseo(prod: MarketplaceProduct) {
           </div>
         </div>
       </article>
+    </section>
+
+    <section v-else class="py-16 text-center bg-white/80 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800">
+      <Search class="w-10 h-10 mx-auto text-slate-300" />
+      <h2 class="mt-4 text-lg font-bold text-slate-800 dark:text-white">No encontramos coincidencias</h2>
+      <p class="mt-1 text-sm text-slate-500">Prueba con otra categoría o restablece tu búsqueda.</p>
+      <button @click="showOffers" class="mt-5 px-4 py-2 rounded-lg bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold">Ver todo el catálogo</button>
     </section>
 
     <!-- MODAL: Visor de Galería Visual del Producto -->
