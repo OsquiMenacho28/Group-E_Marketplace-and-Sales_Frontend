@@ -52,3 +52,10 @@ export interface UserProfile {
   role: 'cliente' | 'cajero' | 'administrador' | 'gerente_comercial';
   puntos_saldo: number;
 }
+
+export interface WishlistItem {
+  id: string;
+  cliente_id: string;
+  variante_id: string;
+  created_at: string;
+}

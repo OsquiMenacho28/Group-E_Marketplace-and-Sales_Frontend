@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import MarketplaceView from '@/views/marketplace/MarketplaceView.vue';
+import WishlistView from '@/views/marketplace/WishlistView.vue';
 import PosView from '@/views/pos/PosView.vue';
 import AdminView from '@/views/admin/AdminView.vue';
 
@@ -25,6 +26,11 @@ const routes = [
     name: 'admin',
     component: AdminView,
     meta: { title: 'Panel Administrativo — MaxiConecta' }
+  },
+  {
+  path: '/wishlist',
+  name: 'wishlist',
+  component: WishlistView
   }
 ];
 

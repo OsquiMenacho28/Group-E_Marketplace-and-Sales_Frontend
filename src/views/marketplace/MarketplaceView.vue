@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useCartStore } from '@/stores/cart';
-import { Search, ShoppingBag, Filter, CheckCircle2, Star, ShieldCheck, Tag } from 'lucide-vue-next';
+import { useWishlistStore } from '@/stores/wishlist';
+import { Search, ShoppingBag, Filter, CheckCircle2, Star, ShieldCheck, Tag, Heart } from 'lucide-vue-next';
 
 const cartStore = useCartStore();
+
+const wishlistStore = useWishlistStore();
 
 const searchQuery = ref('');
 const selectedCategory = ref('Todos');
@@ -74,6 +77,17 @@ function agregarAlCarrito(prod: any) {
     precio_unitario: prod.precio
   });
 }
+
+/*function alternarDeseo(prod: any) {
+  const yaEsta = wishlistStore.estaEnDeseos(prod.id);
+
+  if (yaEsta) {
+    wishlistStore.eliminarDeseo('demo-client', prod.id);
+  } else {
+    wishlistStore.agregarDeseo('demo-client', prod.id);
+  }
+}*/
+
 </script>
 
 <template>
@@ -139,6 +153,15 @@ function agregarAlCarrito(prod: any) {
             :alt="prod.nombre"
             class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
           />
+          
+          <button
+            type="button"
+            class="absolute top-2.5 right-2.5 p-2 rounded-full bg-white/90 text-slate-500 hover:text-rose-500 hover:bg-white shadow-sm backdrop-blur-sm transition-colors"
+          title="Agregar a lista de deseos"
+          >
+          <Heart class="w-5 h-5" />
+          </button>
+          
           <span class="absolute top-2.5 left-2.5 bg-blue-600/90 text-white text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
             {{ prod.badge }}
           </span>
