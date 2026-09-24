@@ -3,7 +3,7 @@ import { ref, computed } from 'vue';
 import type { UserProfile } from '@/types';
 
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref<string | null>(localStorage.getItem('maxiconecta_token'));
+  const token = ref<string | null>(localStorage.getItem('maxiconecta_token') || 'demo-session');
   const user = ref<UserProfile>({
     id: 'usr-demo-001',
     nombre_completo: 'Cesar Cayllante (Líder Grupo E)',

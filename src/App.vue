@@ -36,7 +36,7 @@ function canjearCupon() {
 <template>
   <div class="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
     <!-- Navbar Superior Profesional -->
-    <header class="sticky top-0 z-40 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
+    <header class="sticky top-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shadow-sm">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         <!-- Logo y Marca -->
         <div class="flex items-center gap-6">
@@ -53,7 +53,7 @@ function canjearCupon() {
           </router-link>
 
           <!-- Selector de Portales (Marketplace / POS / Admin) -->
-          <nav class="hidden md:flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
+          <nav class="hidden md:flex items-center gap-1 bg-slate-100/90 dark:bg-slate-800/90 p-1 rounded-xl ring-1 ring-slate-200/70 dark:ring-slate-700/70">
             <router-link
               to="/marketplace"
               :class="[
@@ -95,7 +95,7 @@ function canjearCupon() {
         <!-- Acciones Derecha (Rol Selector & Botón Carrito) -->
         <div class="flex items-center gap-3">
           <!-- Selector Rápido de Rol (Para pruebas y presentación) -->
-          <div class="hidden sm:flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg text-xs">
+          <div class="hidden sm:flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg text-xs ring-1 ring-slate-200/70 dark:ring-slate-700/70">
             <UserCircle class="w-4 h-4 text-slate-400" />
             <select
               :value="authStore.userRole"
