@@ -18,7 +18,9 @@ import {
   ChevronRight,
   Layers,
   Sparkles,
-  Heart
+  Heart,
+  RefreshCw,
+  Clock3
 } from 'lucide-vue-next';
 
 const cartStore = useCartStore();
@@ -28,6 +30,8 @@ const wishlistStore = useWishlistStore();
 const searchQuery = ref('');
 const selectedCategory = ref('Todos');
 const categories = ref(['Todos', 'Laptops y PCs', 'Periféricos', 'Monitores', 'Audio y Video']);
+const isSyncingCatalog = ref(false);
+const catalogUpdatedAt = ref('recién actualizado');
 
 // Catálogo base con precios y ratings
 interface MarketplaceProduct {
@@ -96,6 +100,7 @@ const products = ref<MarketplaceProduct[]>([
 
 // Sincronizar con base de datos Supabase
 async function syncWithSupabase() {
+  isSyncingCatalog.value = true;
   try {
     const res = await apiClient.get('/api/v1/catalogo/productos');
     const dbProducts: Producto[] = Array.isArray(res.data) ? res.data : res.data.productos || [];
@@ -136,8 +141,11 @@ async function syncWithSupabase() {
         });
       }
     });
+    catalogUpdatedAt.value = new Date().toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' });
   } catch (err) {
     console.warn('Aviso sincronizando productos de Supabase:', err);
+  } finally {
+    isSyncingCatalog.value = false;
   }
 }
 
@@ -181,6 +189,10 @@ function showOffers() {
   searchQuery.value = '';
 }
 
+function refreshCatalog() {
+  syncWithSupabase();
+}
+
 function agregarAlCarrito(prod: any) {
   cartStore.addItem({
     variante_id: prod.id,
@@ -206,41 +218,41 @@ function alternarDeseo(prod: MarketplaceProduct) {
 <template>
   <div class="space-y-8">
     <!-- Hero Banner Promocional -->
-    <section class="relative overflow-hidden rounded-2xl bg-gradient-to-br from-teal-800 via-cyan-800 to-slate-950 p-7 sm:p-10 md:p-14 text-white shadow-2xl surface-grid">
-      <div class="absolute inset-0 bg-[radial-gradient(circle_at_88%_20%,rgba(251,191,36,0.3),transparent_24%),radial-gradient(circle_at_20%_100%,rgba(45,212,191,0.24),transparent_32%)]" />
+    <section class="relative overflow-hidden rounded-2xl bg-gradient-to-br from-teal-50 via-cyan-50 to-amber-100 p-7 sm:p-10 md:p-14 text-slate-950 shadow-xl shadow-teal-950/10 border border-white surface-grid">
+      <div class="absolute inset-0 bg-[radial-gradient(circle_at_88%_20%,rgba(251,191,36,0.42),transparent_24%),radial-gradient(circle_at_20%_100%,rgba(45,212,191,0.28),transparent_32%)]" />
       <div class="relative z-10 grid grid-cols-1 lg:grid-cols-[1.4fr_0.6fr] gap-8 items-end">
         <div class="max-w-2xl space-y-5">
-          <span class="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold tracking-wide backdrop-blur-md border border-white/20">
-            <Sparkles class="w-3.5 h-3.5 text-amber-300" /> Selección tecnológica curada
+          <span class="inline-flex items-center gap-1.5 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold tracking-wide text-teal-900 backdrop-blur-md border border-teal-200 shadow-sm">
+            <Sparkles class="w-3.5 h-3.5 text-amber-600" /> Selección tecnológica curada
           </span>
-          <p class="text-xs font-bold uppercase tracking-[0.18em] text-teal-200">MaxiConecta marketplace</p>
+          <p class="text-xs font-bold uppercase tracking-[0.18em] text-teal-700">MaxiConecta marketplace</p>
           <h1 class="display-font text-4xl sm:text-5xl md:text-6xl font-bold leading-[1.03]">
             Tecnología lista para tu próximo movimiento.
           </h1>
-          <p class="max-w-xl text-teal-50/85 text-sm sm:text-base leading-relaxed">
+          <p class="max-w-xl text-slate-700 text-sm sm:text-base leading-relaxed">
             Compara equipos, encuentra disponibilidad inmediata y compra con la misma experiencia que conecta nuestras sucursales.
           </p>
           <div class="flex flex-wrap gap-3 pt-1">
             <button @click="showOffers" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-300 hover:bg-amber-200 text-slate-950 text-sm font-bold shadow-lg shadow-amber-950/20">
               Ver catálogo <ChevronRight class="w-4 h-4" />
             </button>
-            <button @click="selectedCategory = 'Laptops y PCs'" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white/10 hover:bg-white/20 border border-white/20 text-sm font-semibold backdrop-blur-sm">
+            <button @click="selectedCategory = 'Laptops y PCs'" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white/80 hover:bg-white border border-teal-200 text-teal-900 text-sm font-semibold shadow-sm backdrop-blur-sm">
               Explorar laptops
             </button>
           </div>
         </div>
         <div class="grid grid-cols-2 gap-3 max-w-sm lg:justify-self-end">
-          <div class="rounded-xl bg-white/10 p-4 border border-white/15 backdrop-blur-sm">
-            <span class="block text-3xl font-black text-amber-300">{{ inventorySummary.products }}</span>
-            <span class="block mt-1 text-[11px] uppercase tracking-wider text-teal-100">productos visibles</span>
+          <div class="rounded-xl bg-white/80 p-4 border border-white shadow-sm backdrop-blur-sm">
+            <span class="block text-3xl font-black text-amber-500">{{ inventorySummary.products }}</span>
+            <span class="block mt-1 text-[11px] uppercase tracking-wider text-slate-600">productos visibles</span>
           </div>
-          <div class="rounded-xl bg-white/10 p-4 border border-white/15 backdrop-blur-sm">
-            <span class="block text-3xl font-black text-white">{{ inventorySummary.units }}</span>
-            <span class="block mt-1 text-[11px] uppercase tracking-wider text-teal-100">unidades en stock</span>
+          <div class="rounded-xl bg-white/80 p-4 border border-white shadow-sm backdrop-blur-sm">
+            <span class="block text-3xl font-black text-teal-800">{{ inventorySummary.units }}</span>
+            <span class="block mt-1 text-[11px] uppercase tracking-wider text-slate-600">unidades en stock</span>
           </div>
-          <div class="col-span-2 rounded-xl bg-slate-950/30 p-4 border border-white/10 flex items-center gap-3">
-            <ShieldCheck class="w-9 h-9 text-teal-200 shrink-0" />
-            <p class="text-xs leading-relaxed text-teal-50">Precios sincronizados con catálogo y disponibilidad por sucursal.</p>
+          <div class="col-span-2 rounded-xl bg-slate-900/85 p-4 border border-slate-900 flex items-center gap-3 shadow-lg shadow-slate-900/10">
+            <ShieldCheck class="w-9 h-9 text-teal-300 shrink-0" />
+            <p class="text-xs leading-relaxed text-slate-100">Precios sincronizados con catálogo y disponibilidad por sucursal.</p>
           </div>
         </div>
       </div>
@@ -253,10 +265,14 @@ function alternarDeseo(prod: MarketplaceProduct) {
         </span>
         <div>
           <h2 class="text-sm font-bold text-slate-900 dark:text-white">Encuentra tu próximo equipo</h2>
-          <p class="text-[11px] text-slate-500">{{ inventorySummary.products }} resultados para explorar</p>
+          <p class="text-[11px] text-slate-500 flex items-center gap-1.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 soft-pulse"></span>
+            {{ inventorySummary.products }} resultados · Catálogo sincronizado {{ catalogUpdatedAt }}
+          </p>
         </div>
       </div>
-      <div class="relative w-full md:w-96">
+      <div class="flex items-center gap-2 w-full md:w-auto">
+        <div class="relative w-full md:w-80">
         <Search class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
         <input
           v-model="searchQuery"
@@ -264,6 +280,16 @@ function alternarDeseo(prod: MarketplaceProduct) {
           placeholder="Buscar por nombre, marca o SKU..."
           class="w-full pl-10 pr-4 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
         />
+        </div>
+        <button
+          type="button"
+          class="shrink-0 w-10 h-10 rounded-lg border border-slate-200 bg-slate-50 hover:bg-teal-50 hover:border-teal-200 text-slate-500 hover:text-teal-700 flex items-center justify-center"
+          :title="isSyncingCatalog ? 'Actualizando catálogo' : 'Actualizar catálogo'"
+          :disabled="isSyncingCatalog"
+          @click="refreshCatalog"
+        >
+          <RefreshCw :class="['w-4 h-4', isSyncingCatalog ? 'animate-spin' : '']" />
+        </button>
       </div>
 
       <!-- Píldoras de Categorías -->
@@ -283,6 +309,11 @@ function alternarDeseo(prod: MarketplaceProduct) {
         </button>
       </div>
     </section>
+
+    <div class="flex flex-wrap items-center justify-between gap-3 px-1 text-[11px] text-slate-500">
+      <span class="inline-flex items-center gap-1.5"><Clock3 class="w-3.5 h-3.5 text-teal-600" /> Inventario y precios conectados al gateway</span>
+      <span class="font-semibold text-slate-700">Categoría activa: {{ selectedCategory }}</span>
+    </div>
 
     <!-- Grid de Productos -->
     <section v-if="filteredProducts.length" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
