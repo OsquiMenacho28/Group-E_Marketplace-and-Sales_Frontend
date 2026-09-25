@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router';
 import { useCartStore } from '@/stores/cart';
 import { useAuthStore } from '@/stores/auth';
 import AuthModal from '@/components/auth/AuthModal.vue';
+import CheckoutModal from '@/components/checkout/CheckoutModal.vue';
 import { 
   ShoppingBag, 
   Store, 
@@ -18,7 +19,8 @@ import {
   Sparkles,
   LogOut,
   User,
-  ChevronDown
+  ChevronDown,
+  Loader2
 } from 'lucide-vue-next';
 
 const route = useRoute();
@@ -42,6 +44,11 @@ function canjearCupon() {
 function handleLogout() {
   authStore.logout();
   isUserMenuOpen.value = false;
+}
+
+function handleIniciarCheckout() {
+  const clienteId = authStore.user?.id || 'cliente-anonimo';
+  cartStore.iniciarCheckoutConReserva(clienteId);
 }
 </script>
 
@@ -313,10 +320,15 @@ function handleLogout() {
             </div>
 
             <button
-              :disabled="cartStore.items.length === 0"
-              class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg flex items-center justify-center gap-2"
+              @click="handleIniciarCheckout"
+              :disabled="cartStore.items.length === 0 || cartStore.isReserving"
+              class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all hover:shadow-blue-500/25"
             >
-              Iniciar Checkout [Reserva Stock TTL] <ChevronRight class="w-4 h-4" />
+              <Loader2 v-if="cartStore.isReserving" class="w-4 h-4 animate-spin" />
+              <span v-if="cartStore.isReserving">Bloqueando stock en Inventarios...</span>
+              <span v-else class="flex items-center gap-2">
+                Iniciar Checkout [Reserva Stock TTL] <ChevronRight class="w-4 h-4" />
+              </span>
             </button>
           </div>
         </div>
@@ -337,5 +349,8 @@ function handleLogout() {
 
     <!-- Modal de Autenticación Unificado (Login / Registro / Cuentas Demo) -->
     <AuthModal />
+
+    <!-- Modal de Checkout con Reserva de Stock y Contador TTL (RF-14 · RIO-INV-02) -->
+    <CheckoutModal />
   </div>
 </template>

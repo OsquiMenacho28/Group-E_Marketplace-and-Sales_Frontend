@@ -122,3 +122,26 @@ export interface WishlistItem {
   variante_id: string;
   created_at: string;
 }
+
+export type CheckoutModalidad = 'domicilio' | 'retiro_sucursal';
+export type CheckoutMetodoPago = 'tarjeta' | 'qr' | 'pasarela';
+export type ReservaStockStatus = 'idle' | 'reservando' | 'activa' | 'expirada' | 'confirmada' | 'error';
+
+export interface ReservaStockResponse {
+  reserva_id: string;
+  ttl_expira_en_segundos: number;
+  expira_en_timestamp?: number;
+  monto_total: number;
+  metodo_pago?: string;
+  status: string;
+  mensaje?: string;
+}
+
+export interface CheckoutPayload {
+  tipo_despacho: CheckoutModalidad;
+  metodo_pago: CheckoutMetodoPago;
+  sucursal_id?: string;
+  direccion_entrega?: string;
+  costo_envio: number;
+  notas?: string;
+}
