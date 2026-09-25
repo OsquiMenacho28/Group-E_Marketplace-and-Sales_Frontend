@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { useCartStore } from '@/stores/cart';
 import { useAuthStore } from '@/stores/auth';
+import { apiClient } from '@/api/client';
 import AuthModal from '@/components/auth/AuthModal.vue';
 import { 
   ShoppingBag, 
@@ -28,14 +29,34 @@ const isUserMenuOpen = ref(false);
 
 const cuponInput = ref('');
 const cuponMsg = ref('');
+const checkoutMsg = ref('');
 
-function canjearCupon() {
+async function canjearCupon() {
   if (!cuponInput.value) return;
-  const ok = cartStore.aplicarCupon(cuponInput.value);
+  const ok = await cartStore.aplicarCupon(cuponInput.value);
   if (ok) {
     cuponMsg.value = '¡Cupón MAXI10 aplicado (10% de descuento)!';
   } else {
     cuponMsg.value = 'Cupón inválido. Prueba con MAXI10';
+  }
+}
+
+async function iniciarCheckout() {
+  if (!authStore.user?.id) {
+    authStore.openAuthModal('login');
+    checkoutMsg.value = 'Inicia sesión para reservar el stock antes del pago.';
+    return;
+  }
+  checkoutMsg.value = '';
+  try {
+    const response = await apiClient.post(`/api/v1/carrito/${cartStore.sessionId}/checkout/iniciar`, {
+      cliente_id: authStore.user.id,
+      metodo_pago: 'tarjeta',
+      tipo_despacho: 'domicilio'
+    });
+    checkoutMsg.value = `Stock reservado por ${Math.floor(response.data.ttl_expira_en_segundos / 60)} minutos.`;
+  } catch (error: any) {
+    checkoutMsg.value = error.response?.data?.detail || 'No fue posible reservar el stock.';
   }
 }
 
@@ -210,7 +231,7 @@ function handleLogout() {
 
           <!-- Botón Carrito Flotante (RF-13) -->
           <button
-            @click="cartStore.toggleDrawer"
+            @click="cartStore.openDrawer"
             class="relative p-2.5 bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 text-blue-600 dark:text-blue-400 rounded-xl"
             title="Abrir Carrito"
           >
@@ -232,30 +253,39 @@ function handleLogout() {
     </main>
 
     <!-- Drawer Deslizante de Carrito Persistente (RF-13, RF-14) -->
-    <div
-      v-if="cartStore.isDrawerOpen"
-      class="fixed inset-0 z-50 overflow-hidden bg-black/60 backdrop-blur-sm transition-opacity"
-    >
+    <Teleport to="body">
+      <Transition name="cart-overlay">
+        <div
+          v-if="cartStore.isDrawerOpen"
+          class="fixed inset-0 z-[100] overflow-hidden bg-black/60 backdrop-blur-sm"
+          @click.self="cartStore.closeDrawer"
+        >
       <div class="fixed inset-y-0 right-0 max-w-full flex pl-10">
-        <div class="w-screen max-w-md bg-white dark:bg-slate-900 shadow-2xl flex flex-col border-l border-slate-200 dark:border-slate-800">
+        <div class="cart-drawer w-screen max-w-md bg-white dark:bg-slate-900 shadow-2xl flex flex-col border-l border-slate-200 dark:border-slate-800">
           <!-- Drawer Header -->
           <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
             <div class="flex items-center gap-2">
               <ShoppingBag class="w-5 h-5 text-blue-600" />
-              <h2 class="text-base font-bold">Carrito de Compras (Redis)</h2>
+              <div>
+                <h2 class="text-base font-bold">Carrito de Compras</h2>
+                <span class="text-[10px] text-emerald-600 font-semibold flex items-center gap-1"><span class="w-1.5 h-1.5 bg-emerald-500 rounded-full soft-pulse"></span> Sincronizado con Redis</span>
+              </div>
             </div>
-            <button @click="cartStore.toggleDrawer" class="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+            <button @click="cartStore.closeDrawer" class="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
               <X class="w-5 h-5 text-slate-500" />
             </button>
           </div>
 
           <!-- Drawer Body: Lista de Ítems -->
           <div class="flex-1 overflow-y-auto p-5 space-y-4">
-            <div
-              v-for="item in cartStore.items"
-              :key="item.variante_id"
-              class="flex gap-3 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-100 dark:border-slate-800"
-            >
+            <p v-if="cartStore.error" class="p-3 rounded-lg bg-rose-50 text-rose-700 text-xs font-medium">{{ cartStore.error }}</p>
+            <div v-if="cartStore.isLoading" class="flex items-center gap-2 text-xs text-slate-400"><span class="w-4 h-4 border-2 border-teal-600 border-t-transparent rounded-full animate-spin"></span> Actualizando carrito...</div>
+            <TransitionGroup name="cart-item" tag="div" class="space-y-3">
+              <div
+                v-for="item in cartStore.items"
+                :key="item.variante_id"
+                class="flex gap-3 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-100 dark:border-slate-800"
+              >
               <div class="flex-1">
                 <h4 class="text-xs font-bold text-slate-800 dark:text-slate-200 line-clamp-2">{{ item.nombre }}</h4>
                 <span class="text-[11px] font-mono text-slate-400">BOB {{ item.precio_unitario.toFixed(2) }} c/u</span>
@@ -273,7 +303,8 @@ function handleLogout() {
                 </button>
                 <span class="text-sm font-bold text-blue-600">BOB {{ item.total_linea.toFixed(2) }}</span>
               </div>
-            </div>
+              </div>
+            </TransitionGroup>
 
             <div v-if="cartStore.items.length === 0" class="py-12 text-center text-slate-400 space-y-2">
               <ShoppingBag class="w-12 h-12 mx-auto text-slate-300 dark:text-slate-700" />
@@ -296,6 +327,7 @@ function handleLogout() {
               </button>
             </div>
             <p v-if="cuponMsg" class="text-[11px] text-emerald-600 font-semibold">{{ cuponMsg }}</p>
+            <p v-if="checkoutMsg" class="text-[11px] text-teal-700 font-semibold">{{ checkoutMsg }}</p>
 
             <div class="space-y-1 text-xs text-slate-500 pt-1">
               <div class="flex justify-between">
@@ -313,15 +345,18 @@ function handleLogout() {
             </div>
 
             <button
+              @click="iniciarCheckout"
               :disabled="cartStore.items.length === 0"
-              class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg flex items-center justify-center gap-2"
+              class="w-full py-3 bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg shadow-teal-900/20 flex items-center justify-center gap-2"
             >
               Iniciar Checkout [Reserva Stock TTL] <ChevronRight class="w-4 h-4" />
             </button>
           </div>
         </div>
       </div>
-    </div>
+        </div>
+      </Transition>
+    </Teleport>
 
     <!-- Footer Institucional UCB -->
     <footer class="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 py-6 text-center text-xs text-slate-500">
