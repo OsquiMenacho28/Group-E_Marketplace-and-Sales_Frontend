@@ -145,3 +145,46 @@ export interface CheckoutPayload {
   costo_envio: number;
   notas?: string;
 }
+
+// -----------------------------------------------------------------------------
+// BÚSQUEDA FACETADA Y SUGERENCIAS (RF-06 / US-06)
+// -----------------------------------------------------------------------------
+export interface FacetItem {
+  id: string;
+  etiqueta: string;
+  total: number;
+  seleccionado: boolean;
+}
+
+export interface RangoPrecioFacet {
+  min: number;
+  max: number;
+}
+
+export interface FacetasCatalogo {
+  categorias: FacetItem[];
+  marcas: FacetItem[];
+  precio: RangoPrecioFacet;
+  en_stock: number;
+  total_general: number;
+}
+
+export interface BusquedaFacetadaResponse {
+  items: Producto[];
+  total_coincidencias: number;
+  pagina: number;
+  limite: number;
+  facetas: FacetasCatalogo;
+}
+
+export interface SugerenciaItem {
+  id: string;
+  nombre: string;
+  sku: string;
+  categoria: string;
+  marca?: string | null;
+  precio: number;
+  imagen_url?: string | null;
+  stock: number;
+}
+
