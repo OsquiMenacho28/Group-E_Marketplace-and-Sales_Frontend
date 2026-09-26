@@ -7,9 +7,9 @@ export const useCartStore = defineStore('cart', () => {
   const isDrawerOpen = ref(false);
   const items = ref<ItemCarrito[]>([
     {
-      variante_id: 'b0000000-0000-0000-0000-000000000001',
-      sku: 'LAP-DELL-XPS15-16GB',
-      nombre: 'Laptop Dell XPS 15 (16GB RAM / 512GB SSD)',
+      variante_id: 'e38572aa-a259-40ce-ac39-6e0a4e4fd2c2',
+      sku: 'MOU-LOG-MX3S-BASE',
+      nombre: 'Mouse Inalámbrico Logitech MX Master 3S',
       cantidad: 1,
       precio_unitario: 8999.00,
       total_linea: 8999.00

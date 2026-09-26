@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue';
-import { apiClient } from '@/api/client';
-import type { Producto, Categoria } from '@/types';
+import { computed, onMounted, ref } from 'vue';
+import HasRole from '@/components/HasRole.vue';
 import ProductMultimediaManager from '@/components/ProductMultimediaManager.vue';
+import { apiClient } from '@/api/client';
+import type { Producto } from '@/types';
 import { 
   TrendingUp, 
   ShoppingBag, 
@@ -12,70 +13,268 @@ import {
   FileText, 
   AlertTriangle,
   ArrowUpRight,
+  ChevronDown,
+  ChevronRight,
+  ChevronLeft,
+  Edit3,
+  FolderTree,
+  ImagePlus,
   Image as ImageIcon,
   Plus,
-  Search,
-  CheckCircle2,
-  AlertCircle,
-  Loader2,
+  Save,
+  Store,
   X,
-  Edit2,
-  Trash2,
-  ChevronLeft,
-  ChevronRight,
+  Search,
   Filter,
-  Check,
-  Archive,
-  Eye,
+  Trash2,
   RefreshCw,
-  Tag
+  CheckCircle2,
+  SlidersHorizontal,
+  Sparkles,
+  Eye
 } from 'lucide-vue-next';
 
-// Pestaña activa: 'productos' | 'multimedia' | 'dashboard'
-const activeTab = ref<'productos' | 'multimedia' | 'dashboard'>('productos');
+interface CategoryNode {
+  id: string;
+  name: string;
+  description: string;
+  children?: CategoryNode[];
+}
 
-// Estado de productos y categorías desde Supabase
-const productos = ref<Producto[]>([]);
-const categorias = ref<Categoria[]>([]);
-const isLoadingCatalog = ref(false);
-const catalogSearch = ref('');
-const selectedCategoriaFilter = ref('Todas');
-const selectedEstadoFilter = ref('Todos');
+interface AttributeField {
+  id: string;
+  label: string;
+  type: 'text' | 'number' | 'select';
+  value: string;
+  options?: string[];
+  custom?: boolean;
+}
 
-// Paginación (KAN-291)
+interface PriceMatrixRow {
+  branch: string;
+  web: number;
+  pos: number;
+  b2b: number;
+}
+
+interface CatalogCategory {
+  id: string;
+  nombre: string;
+  descripcion?: string;
+}
+
+interface PendingImage {
+  name: string;
+  dataUrl: string;
+  size: number;
+}
+
+// Control de Pestañas Principales en Admin
+const activeAdminTab = ref<'productos' | 'categorias' | 'kpis'>('productos');
+
+// ============================================================================
+// HISTORIA KAN-17 / RF-01: GESTIÓN DE PRODUCTOS Y CICLO DE VIDA
+// ============================================================================
+const productsList = ref<Producto[]>([]);
+const isLoadingProducts = ref(false);
+const searchProductQuery = ref('');
+const statusFilter = ref<string>('todos');
 const currentPage = ref(1);
 const itemsPerPage = ref(6);
 
-// Producto seleccionado para gestionar su galería
-const selectedProduct = ref<Producto | null>(null);
+// Modal para KAN-19 / RF-03: Galería Visual y Multimedia
+const selectedMultimediaProduct = ref<Producto | null>(null);
 
-// Modal para Crear / Editar Producto (KAN-307)
-const showProductModal = ref(false);
-const isEditing = ref(false);
-const editingProductId = ref<string | null>(null);
-const isSavingProduct = ref(false);
-const productModalError = ref<string | null>(null);
-const toastSuccess = ref<string | null>(null);
+// Modal de Edición de Producto (KAN-307)
+const isEditModalOpen = ref(false);
+const editingProduct = ref<{
+  id: string;
+  sku: string;
+  nombre: string;
+  marca: string;
+  descripcion: string;
+  categoria_id: string;
+  precio: number;
+  precio_costo: number;
+  estado: string;
+} | null>(null);
+const editFormError = ref('');
+const isSavingEdit = ref(false);
 
-// Formulario reactivo con validaciones y precios (KAN-307)
-const productForm = ref({
-  sku: '',
-  nombre: '',
-  marca: '',
-  categoria_id: '',
-  precio: 0,
-  precio_costo: 0,
-  descripcion: '',
-  estado: 'publicado'
+// Modal de Confirmación de Eliminación
+const productToDelete = ref<Producto | null>(null);
+const isDeletingProduct = ref(false);
+
+// Feedback Toast/Banner
+const actionFeedback = ref<{ type: 'success' | 'error'; message: string } | null>(null);
+function showFeedback(message: string, type: 'success' | 'error' = 'success') {
+  actionFeedback.value = { type, message };
+  setTimeout(() => {
+    actionFeedback.value = null;
+  }, 4500);
+}
+
+// Cargar listado de productos desde la API (KAN-306 / KAN-291)
+async function loadProductsList() {
+  isLoadingProducts.value = true;
+  try {
+    const res = await apiClient.get('/productos');
+    const data = res.data.productos || res.data || [];
+    productsList.value = Array.isArray(data) ? data : [];
+  } catch (err: any) {
+    console.warn('Fallo cargando /productos, intentando /v1/catalogo/productos:', err);
+    try {
+      const altRes = await apiClient.get('/v1/catalogo/productos');
+      const altData = Array.isArray(altRes.data) ? altRes.data : altRes.data.productos || [];
+      productsList.value = Array.isArray(altData) ? altData : [];
+    } catch {
+      showFeedback('No se pudo cargar la lista de productos del catálogo.', 'error');
+    }
+  } finally {
+    isLoadingProducts.value = false;
+    // Sincronizar selector de matriz de precios con productos reales de la BD
+    if (productsList.value.length > 0) {
+      priceProducts.value = productsList.value.map(p => ({
+        id: p.id,
+        name: p.nombre,
+        sku: p.sku
+      }));
+      if (!priceProducts.value.some(p => p.id === selectedPriceProduct.value)) {
+        selectedPriceProduct.value = priceProducts.value[0]?.id || '';
+      }
+    }
+  }
+}
+
+// Cambio rápido de ciclo de vida (KAN-291: publicado, borrador, inactivo, descontinuado)
+async function quickChangeStatus(prod: Producto, nuevoEstado: string) {
+  try {
+    await apiClient.patch(`/productos/${prod.id}/estado`, { estado: nuevoEstado });
+    prod.estado = nuevoEstado;
+    showFeedback(`El estado de "${prod.nombre}" ahora es "${nuevoEstado.toUpperCase()}".`);
+  } catch (err: any) {
+    showFeedback(err.response?.data?.error || 'Error al cambiar estado del producto.', 'error');
+  }
+}
+
+// Abrir modal de edición reactiva (KAN-307)
+function openEditModalProduct(prod: Producto) {
+  if (catalogCategories.value.length === 0) {
+    loadCatalogCategories();
+  }
+  editingProduct.value = {
+    id: prod.id,
+    sku: prod.sku,
+    nombre: prod.nombre,
+    marca: prod.marca || '',
+    descripcion: prod.descripcion || '',
+    categoria_id: prod.categoria_id || catalogCategories.value[0]?.id || '',
+    precio: prod.precio || 0,
+    precio_costo: (prod as any).precio_costo || Math.round((prod.precio || 0) * 0.7),
+    estado: prod.estado || 'publicado'
+  };
+  editFormError.value = '';
+  isEditModalOpen.value = true;
+}
+
+// Guardar cambios de edición (KAN-306 / KAN-307)
+async function submitEditProduct() {
+  if (!editingProduct.value) return;
+  if (!editingProduct.value.sku.trim() || !editingProduct.value.nombre.trim()) {
+    editFormError.value = 'El SKU y el Nombre son campos obligatorios.';
+    return;
+  }
+  isSavingEdit.value = true;
+  editFormError.value = '';
+  try {
+    const res = await apiClient.put(`/productos/${editingProduct.value.id}`, {
+      sku: editingProduct.value.sku.trim().toUpperCase(),
+      nombre: editingProduct.value.nombre.trim(),
+      marca: editingProduct.value.marca.trim() || null,
+      descripcion: editingProduct.value.descripcion.trim() || null,
+      categoria_id: editingProduct.value.categoria_id || null,
+      precio: Number(editingProduct.value.precio) || 0,
+      precio_costo: Number(editingProduct.value.precio_costo) || 0,
+      estado: editingProduct.value.estado
+    });
+
+    const updated = res.data.producto || res.data;
+    const index = productsList.value.findIndex(p => p.id === editingProduct.value?.id);
+    if (index !== -1) {
+      productsList.value[index] = {
+        ...productsList.value[index],
+        ...updated,
+        precio: Number(editingProduct.value.precio),
+        precio_costo: Number(editingProduct.value.precio_costo)
+      };
+    }
+    isEditModalOpen.value = false;
+    showFeedback('Producto actualizado exitosamente con SKU y validaciones validadas.');
+  } catch (err: any) {
+    editFormError.value = err.response?.data?.error || 'Error al guardar los cambios del producto.';
+  } finally {
+    isSavingEdit.value = false;
+  }
+}
+
+// Eliminar producto con confirmación (KAN-291)
+async function confirmDeleteProduct() {
+  if (!productToDelete.value) return;
+  isDeletingProduct.value = true;
+  try {
+    await apiClient.delete(`/productos/${productToDelete.value.id}`);
+    productsList.value = productsList.value.filter(p => p.id !== productToDelete.value?.id);
+    showFeedback(`Producto "${productToDelete.value.nombre}" eliminado del catálogo.`);
+    productToDelete.value = null;
+  } catch (err: any) {
+    showFeedback(err.response?.data?.error || 'Error al eliminar producto.', 'error');
+  } finally {
+    isDeletingProduct.value = false;
+  }
+}
+
+// Cuando se suben o reordenan fotos en ProductMultimediaManager (KAN-19)
+function handleMultimediaUpdated() {
+  loadProductsList();
+}
+
+// Filtros y Paginación (KAN-291)
+const selectedCategoryFilter = ref('todas');
+
+const filteredProductsList = computed(() => {
+  return productsList.value.filter(prod => {
+    const query = searchProductQuery.value.trim().toLowerCase();
+    const matchesSearch = !query ||
+      prod.nombre.toLowerCase().includes(query) ||
+      prod.sku.toLowerCase().includes(query) ||
+      (prod.marca && prod.marca.toLowerCase().includes(query)) ||
+      (prod.categorias?.nombre && prod.categorias.nombre.toLowerCase().includes(query));
+
+    const matchesStatus = statusFilter.value === 'todos' || prod.estado?.toLowerCase() === statusFilter.value.toLowerCase();
+
+    const matchesCategory = selectedCategoryFilter.value === 'todas' ||
+      prod.categoria_id === selectedCategoryFilter.value ||
+      prod.categorias?.id === selectedCategoryFilter.value;
+
+    return matchesSearch && matchesStatus && matchesCategory;
+  });
 });
 
-const formErrors = ref({
-  sku: '',
-  nombre: '',
-  precio: ''
+const totalPages = computed(() => Math.ceil(filteredProductsList.value.length / itemsPerPage.value) || 1);
+
+const paginatedProducts = computed(() => {
+  const start = (currentPage.value - 1) * itemsPerPage.value;
+  return filteredProductsList.value.slice(start, start + itemsPerPage.value);
 });
 
-// KPIs simulados para el dashboard
+const productsStats = computed(() => {
+  const total = productsList.value.length;
+  const publicados = productsList.value.filter(p => p.estado === 'publicado').length;
+  const borradores = productsList.value.filter(p => p.estado === 'borrador').length;
+  const conImagenes = productsList.value.filter(p => (p.imagenes_producto && p.imagenes_producto.length > 0)).length;
+  return { total, publicados, borradores, conImagenes };
+});
+
 const kpis = ref({
   ventasHoy: 15420.50,
   ventasMes: 348920.00,
@@ -91,628 +290,875 @@ const recentOrders = ref([
   { id: 'ORD-2026-079', cliente: 'Sofía Doria Medina', total: 2450.00, canal: 'Web', estado: 'Despachada', fecha: '11/09 18:20' }
 ]);
 
-const lowStockAlerts = ref([
-  { sku: 'MON-LG-27GP', nombre: 'Monitor LG UltraGear 27"', stockActual: 2, puntoReorden: 5 },
-  { sku: 'LAP-DELL-XPS15', nombre: 'Laptop Dell XPS 15', stockActual: 3, puntoReorden: 8 }
+const lowStockAlerts = computed(() => {
+  if (productsList.value.length === 0) {
+    return [
+      { sku: 'MON-LG-27GP', nombre: 'Monitor LG UltraGear 27"', stockActual: 2, puntoReorden: 5 },
+      { sku: 'LAP-DELL-XPS15', nombre: 'Laptop Dell XPS 15', stockActual: 0, puntoReorden: 8 }
+    ];
+  }
+  return productsList.value
+    .filter(p => p.estado === 'descontinuado' || p.estado === 'borrador')
+    .slice(0, 3)
+    .map(p => ({
+      sku: p.sku,
+      nombre: p.nombre,
+      stockActual: p.estado === 'descontinuado' ? 0 : 3,
+      puntoReorden: 5
+    }));
+});
+
+const categories = ref<CategoryNode[]>([
+  {
+    id: '0201bb04-acb2-46fe-8aa9-198a4701ab54',
+    name: 'Laptops y PCs',
+    description: 'Equipos portátiles y de escritorio.'
+  },
+  {
+    id: 'bfeabe38-3626-49e1-9b4e-ace0315cd91d',
+    name: 'Periféricos',
+    description: 'Teclados, mouse y accesorios para estaciones de trabajo.'
+  },
+  {
+    id: 'd1543851-f4d8-4c72-b952-dcf4a777666a',
+    name: 'Monitores',
+    description: 'Pantallas para gaming, diseño y productividad.'
+  },
+  {
+    id: 'd0998a1f-3b78-4099-928a-b05c70ae472b',
+    name: 'Audio y Video',
+    description: 'Auriculares, micrófonos y cámaras de alta fidelidad.'
+  }
 ]);
 
-function showToast(msg: string) {
-  toastSuccess.value = msg;
-  setTimeout(() => {
-    toastSuccess.value = null;
-  }, 4000);
+const expandedCategoryIds = ref(new Set(['0201bb04-acb2-46fe-8aa9-198a4701ab54', 'bfeabe38-3626-49e1-9b4e-ace0315cd91d']));
+const editingCategory = ref<CategoryNode | null>(null);
+const editingName = ref('');
+const editingDescription = ref('');
+const isProductModalOpen = ref(false);
+const selectedProductCategory = ref('');
+const productName = ref('');
+const productSku = ref('');
+const productBrand = ref('');
+const productDescription = ref('');
+const productPrice = ref<number | null>(null);
+const productAttributeFields = ref<AttributeField[]>([]);
+const catalogCategories = ref<CatalogCategory[]>([]);
+const pendingImages = ref<PendingImage[]>([]);
+const imageInput = ref<HTMLInputElement | null>(null);
+const isSavingProduct = ref(false);
+const productFormMessage = ref('');
+const priceProducts = ref([
+  { id: '7026ea00-797c-43a8-b6e9-58277af347e7', name: 'Monitor Gamer LG UltraGear 27" 165Hz IPS', sku: 'MON-LG-27GP' },
+  { id: 'c121e644-d23a-427d-821e-9c4a8bab7812', name: 'Laptop Dell XPS 15 (OLED 4K, i7 13va Gen)', sku: 'LAP-DELL-XPS15' },
+  { id: 'a03f1380-bf24-4394-acde-6c726a677df3', name: 'Mouse Inalámbrico Logitech MX Master 3S', sku: 'MOU-LOG-MX3S' }
+]);
+const selectedPriceProduct = ref('7026ea00-797c-43a8-b6e9-58277af347e7');
+const priceMatrix = ref<PriceMatrixRow[]>([
+  { branch: 'La Paz Centro', web: 3499, pos: 3420, b2b: 3290 },
+  { branch: 'Calacoto', web: 3549, pos: 3490, b2b: 3350 },
+  { branch: 'Santa Cruz Equipetrol', web: 3599, pos: 3520, b2b: 3380 },
+  { branch: 'Cochabamba Norte', web: 3499, pos: 3390, b2b: 3260 }
+]);
+const priceMatrixSavedAt = ref('');
+
+const priceValues = computed(() => priceMatrix.value.flatMap((row) => [row.web, row.pos, row.b2b]));
+const priceSummary = computed(() => {
+  const values = priceValues.value;
+  return {
+    minimum: Math.min(...values),
+    maximum: Math.max(...values),
+    average: values.reduce((sum, value) => sum + value, 0) / values.length
+  };
+});
+
+const attributeTemplates: Record<string, Omit<AttributeField, 'value'>[]> = {
+  laptops: [
+    { id: 'processor', label: 'Procesador', type: 'text' },
+    { id: 'ram', label: 'Memoria RAM', type: 'select', options: ['8 GB', '16 GB', '32 GB', '64 GB'] },
+    { id: 'storage', label: 'Almacenamiento', type: 'select', options: ['256 GB SSD', '512 GB SSD', '1 TB SSD', '2 TB SSD'] }
+  ],
+  monitors: [
+    { id: 'screen-size', label: 'Tamaño de pantalla', type: 'number' },
+    { id: 'resolution', label: 'Resolución', type: 'select', options: ['Full HD', 'QHD', '4K UHD', '5K'] },
+    { id: 'refresh-rate', label: 'Tasa de refresco', type: 'number' }
+  ],
+  'audio-video': [
+    { id: 'connectivity', label: 'Conectividad', type: 'text' },
+    { id: 'warranty', label: 'Garantía', type: 'select', options: ['6 meses', '1 año', '2 años'] }
+  ],
+  'keyboards-mice': [
+    { id: 'connection', label: 'Tipo de conexión', type: 'select', options: ['USB', 'Bluetooth', 'Inalámbrico 2.4 GHz'] },
+    { id: 'layout', label: 'Distribución', type: 'text' }
+  ],
+  networking: [
+    { id: 'ports', label: 'Cantidad de puertos', type: 'number' },
+    { id: 'speed', label: 'Velocidad', type: 'text' }
+  ]
+};
+
+const visibleCategories = computed(() => {
+  const visible: Array<CategoryNode & { depth: number; hasChildren: boolean }> = [];
+
+  function append(nodes: CategoryNode[], depth: number) {
+    nodes.forEach((category) => {
+      visible.push({ ...category, depth, hasChildren: Boolean(category.children?.length) });
+      if (category.children?.length && expandedCategoryIds.value.has(category.id)) {
+        append(category.children, depth + 1);
+      }
+    });
+  }
+
+  append(categories.value, 0);
+  return visible;
+});
+
+const categoryOptions = computed(() => {
+  const options: CategoryNode[] = [];
+  function append(nodes: CategoryNode[]) {
+    nodes.forEach((category) => {
+      options.push(category);
+      if (category.children) append(category.children);
+    });
+  }
+  append(categories.value);
+  return options;
+});
+
+function toggleCategory(categoryId: string) {
+  const nextExpandedIds = new Set(expandedCategoryIds.value);
+  if (nextExpandedIds.has(categoryId)) {
+    nextExpandedIds.delete(categoryId);
+  } else {
+    nextExpandedIds.add(categoryId);
+  }
+  expandedCategoryIds.value = nextExpandedIds;
 }
 
-// Cargar catálogo de Supabase
-async function fetchCatalog() {
-  isLoadingCatalog.value = true;
-  try {
-    const [pRes, cRes] = await Promise.all([
-      apiClient.get('/productos'),
-      apiClient.get('/categorias')
-    ]);
-    productos.value = pRes.data.productos || [];
-    categorias.value = cRes.data.categorias || [];
+function openEditModal(category: CategoryNode) {
+  editingCategory.value = category;
+  editingName.value = category.name;
+  editingDescription.value = category.description;
+}
 
-    // Si había un producto seleccionado en galería, actualizarlo
-    if (selectedProduct.value) {
-      const refreshed = productos.value.find(p => p.id === selectedProduct.value?.id);
-      if (refreshed) {
-        selectedProduct.value = refreshed;
-      }
+function findCategory(categoryId: string, nodes: CategoryNode[]): CategoryNode | undefined {
+  for (const category of nodes) {
+    if (category.id === categoryId) return category;
+    if (category.children) {
+      const match = findCategory(categoryId, category.children);
+      if (match) return match;
+    }
+  }
+}
+
+function saveCategory() {
+  if (!editingCategory.value || !editingName.value.trim()) return;
+  const category = findCategory(editingCategory.value.id, categories.value);
+  if (category) {
+    category.name = editingName.value.trim();
+    category.description = editingDescription.value.trim();
+  }
+  editingCategory.value = null;
+}
+
+// Categorías de respaldo para garantizar disponibilidad inmediata
+const FALLBACK_CATEGORIES: CatalogCategory[] = [
+  { id: '0201bb04-acb2-46fe-8aa9-198a4701ab54', nombre: 'Laptops y PCs', descripcion: 'Equipos portátiles y de escritorio' },
+  { id: 'bfeabe38-3626-49e1-9b4e-ace0315cd91d', nombre: 'Periféricos', descripcion: 'Teclados, mouse y accesorios' },
+  { id: 'd1543851-f4d8-4c72-b952-dcf4a777666a', nombre: 'Monitores', descripcion: 'Pantallas para gaming y productividad' },
+  { id: 'd0998a1f-3b78-4099-928a-b05c70ae472b', nombre: 'Audio y Video', descripcion: 'Auriculares, micrófonos y cámaras' }
+];
+
+async function loadCatalogCategories() {
+  try {
+    const response = await apiClient.get<CatalogCategory[]>('/v1/catalogo/categorias');
+    const cats = Array.isArray(response.data) ? response.data : [];
+    catalogCategories.value = cats.length > 0 ? cats : FALLBACK_CATEGORIES;
+    if (!selectedProductCategory.value && catalogCategories.value.length > 0) {
+      selectedProductCategory.value = catalogCategories.value[0].id;
     }
   } catch (err) {
-    console.error('Error cargando catálogo desde Supabase:', err);
-  } finally {
-    isLoadingCatalog.value = false;
-  }
-}
-
-onMounted(() => {
-  fetchCatalog();
-});
-
-// Filtrado de productos (búsqueda + categoría + estado de ciclo de vida)
-const filteredProductos = computed(() => {
-  return productos.value.filter(p => {
-    const matchesSearch = p.nombre.toLowerCase().includes(catalogSearch.value.toLowerCase()) ||
-                          p.sku.toLowerCase().includes(catalogSearch.value.toLowerCase()) ||
-                          (p.marca && p.marca.toLowerCase().includes(catalogSearch.value.toLowerCase()));
-    
-    const matchesCategory = selectedCategoriaFilter.value === 'Todas' ||
-                            p.categorias?.nombre === selectedCategoriaFilter.value;
-
-    const matchesEstado = selectedEstadoFilter.value === 'Todos' ||
-                          (p.estado || '').toLowerCase() === selectedEstadoFilter.value.toLowerCase();
-
-    return matchesSearch && matchesCategory && matchesEstado;
-  });
-});
-
-// Reseteo de página al cambiar filtros
-watch([catalogSearch, selectedCategoriaFilter, selectedEstadoFilter], () => {
-  currentPage.value = 1;
-});
-
-// Paginación computada (KAN-291)
-const totalPages = computed(() => {
-  return Math.ceil(filteredProductos.value.length / itemsPerPage.value) || 1;
-});
-
-const paginatedProductos = computed(() => {
-  const start = (currentPage.value - 1) * itemsPerPage.value;
-  return filteredProductos.value.slice(start, start + itemsPerPage.value);
-});
-
-// Abrir gestor multimedia de un producto (KAN-19 / RF-03)
-function openMultimediaManager(prod: Producto) {
-  selectedProduct.value = prod;
-  activeTab.value = 'multimedia';
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-
-// Obtener la imagen principal de un producto
-function getCoverUrl(prod: Producto): string | null {
-  if (!prod.imagenes_producto || prod.imagenes_producto.length === 0) return null;
-  const principal = prod.imagenes_producto.find(i => i.es_principal);
-  return principal ? principal.url : prod.imagenes_producto[0].url;
-}
-
-// Abrir modal para Crear Producto (KAN-307)
-function openCreateModal() {
-  isEditing.value = false;
-  editingProductId.value = null;
-  productForm.value = {
-    sku: '',
-    nombre: '',
-    marca: '',
-    categoria_id: categorias.value[0]?.id || '',
-    precio: 0,
-    precio_costo: 0,
-    descripcion: '',
-    estado: 'publicado'
-  };
-  formErrors.value = { sku: '', nombre: '', precio: '' };
-  productModalError.value = null;
-  showProductModal.value = true;
-}
-
-// Abrir modal para Editar Producto (KAN-307)
-function openEditModal(prod: Producto) {
-  isEditing.value = true;
-  editingProductId.value = prod.id;
-  productForm.value = {
-    sku: prod.sku,
-    nombre: prod.nombre,
-    marca: prod.marca || '',
-    categoria_id: prod.categoria_id || '',
-    precio: prod.precio || 0,
-    precio_costo: (prod as any).precio_costo || Math.round((prod.precio || 0) * 0.7),
-    descripcion: prod.descripcion || '',
-    estado: prod.estado || 'publicado'
-  };
-  formErrors.value = { sku: '', nombre: '', precio: '' };
-  productModalError.value = null;
-  showProductModal.value = true;
-}
-
-// Validaciones reactivas en tiempo real
-function validateForm(): boolean {
-  let isValid = true;
-  formErrors.value = { sku: '', nombre: '', precio: '' };
-
-  const skuClean = productForm.value.sku.trim().toUpperCase();
-  if (!skuClean) {
-    formErrors.value.sku = 'El código SKU es obligatorio.';
-    isValid = false;
-  } else if (skuClean.length < 3) {
-    formErrors.value.sku = 'El SKU debe tener al menos 3 caracteres.';
-    isValid = false;
-  } else if (!/^[A-Z0-9\-_]+$/.test(skuClean)) {
-    formErrors.value.sku = 'Solo se permiten letras, números, guiones (-) y guiones bajos (_).';
-    isValid = false;
-  }
-
-  if (!productForm.value.nombre.trim()) {
-    formErrors.value.nombre = 'El nombre comercial del producto es obligatorio.';
-    isValid = false;
-  } else if (productForm.value.nombre.trim().length < 3) {
-    formErrors.value.nombre = 'El nombre debe tener mínimo 3 caracteres.';
-    isValid = false;
-  }
-
-  if (productForm.value.precio < 0) {
-    formErrors.value.precio = 'El precio de venta no puede ser negativo.';
-    isValid = false;
-  }
-
-  return isValid;
-}
-
-// Guardar Producto (Crear o Editar con persistencia de Precio en Supabase)
-async function handleSaveProduct() {
-  if (!validateForm()) return;
-
-  isSavingProduct.value = true;
-  productModalError.value = null;
-
-  try {
-    const payload = {
-      ...productForm.value,
-      sku: productForm.value.sku.trim().toUpperCase(),
-      nombre: productForm.value.nombre.trim(),
-      precio: Number(productForm.value.precio) || 0,
-      precio_costo: Number(productForm.value.precio_costo) || 0
-    };
-
-    if (isEditing.value && editingProductId.value) {
-      // Actualizar producto existente
-      await apiClient.put(`/productos/${editingProductId.value}`, payload);
-      showToast(`Producto ${payload.sku} actualizado con éxito.`);
-    } else {
-      // Crear nuevo producto
-      const res = await apiClient.post('/productos', payload);
-      showToast(`Producto ${payload.sku} registrado exitosamente con precio BOB ${payload.precio}.`);
-      if (res.data.producto) {
-        showProductModal.value = false;
-        await fetchCatalog();
-        openMultimediaManager(res.data.producto);
-        return;
-      }
+    console.warn('Aviso cargando categorías de Supabase, usando catálogo base:', err);
+    catalogCategories.value = FALLBACK_CATEGORIES;
+    if (!selectedProductCategory.value && catalogCategories.value.length > 0) {
+      selectedProductCategory.value = catalogCategories.value[0].id;
     }
+  }
+}
 
-    await fetchCatalog();
-    showProductModal.value = false;
-  } catch (err: any) {
-    console.error('Error guardando producto:', err);
-    productModalError.value = err.response?.data?.error || 'Ocurrió un error al procesar la solicitud.';
+function openProductModal() {
+  if (catalogCategories.value.length === 0) {
+    loadCatalogCategories();
+  }
+  isProductModalOpen.value = true;
+  productName.value = '';
+  productSku.value = '';
+  productBrand.value = '';
+  productDescription.value = '';
+  productPrice.value = null;
+  selectedProductCategory.value = catalogCategories.value[0]?.id || '0201bb04-acb2-46fe-8aa9-198a4701ab54';
+  productAttributeFields.value = [];
+  pendingImages.value = [];
+  productFormMessage.value = '';
+  if (selectedProductCategory.value) {
+    updateProductCategory(selectedProductCategory.value);
+  }
+}
+
+function updateProductCategory(categoryId: string) {
+  selectedProductCategory.value = categoryId;
+  const category = catalogCategories.value.find((item) => item.id === categoryId);
+  const templateKey = category?.nombre.toLowerCase().includes('laptop') ? 'laptops'
+    : category?.nombre.toLowerCase().includes('monitor') ? 'monitors'
+    : category?.nombre.toLowerCase().includes('audio') ? 'audio-video'
+    : category?.nombre.toLowerCase().includes('teclado') || category?.nombre.toLowerCase().includes('mouse') ? 'keyboards-mice'
+    : category?.nombre.toLowerCase().includes('red') ? 'networking'
+    : '';
+  productAttributeFields.value = (attributeTemplates[templateKey] || []).map((field) => ({
+    ...field,
+    value: ''
+  }));
+}
+
+function formatImageSize(bytes: number) {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function addProductImages(event: Event) {
+  const files = Array.from((event.target as HTMLInputElement).files || []);
+  const remainingSlots = 5 - pendingImages.value.length;
+  const validFiles = files.slice(0, remainingSlots).filter((file) => file.size <= 5 * 1024 * 1024 && ['image/jpeg', 'image/png', 'image/webp'].includes(file.type));
+  if (validFiles.length !== files.length) {
+    productFormMessage.value = 'Solo se aceptan hasta 5 imágenes JPEG, PNG o WebP de máximo 5 MB.';
+  }
+  const images = await Promise.all(validFiles.map((file) => new Promise<PendingImage>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, dataUrl: String(reader.result), size: file.size });
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  })));
+  pendingImages.value.push(...images);
+  if (imageInput.value) imageInput.value.value = '';
+}
+
+function removeProductImage(index: number) {
+  pendingImages.value.splice(index, 1);
+}
+
+function addCustomAttribute() {
+  productAttributeFields.value.push({
+    id: `custom-${Date.now()}`,
+    label: 'Nuevo atributo',
+    type: 'text',
+    value: '',
+    custom: true
+  });
+}
+
+function removeAttribute(fieldId: string) {
+  productAttributeFields.value = productAttributeFields.value.filter((field) => field.id !== fieldId);
+}
+
+async function saveProduct() {
+  if (!productName.value.trim() || !productSku.value.trim() || !selectedProductCategory.value || productPrice.value === null) {
+    productFormMessage.value = 'Completa nombre, SKU, categoría y precio antes de guardar.';
+    return;
+  }
+  isSavingProduct.value = true;
+  productFormMessage.value = '';
+  const attributes = productAttributeFields.value.reduce<Record<string, string>>((result, field) => {
+    if (field.label.trim()) result[field.label.trim()] = field.value;
+    return result;
+  }, {});
+  try {
+    const response = await apiClient.post('/api/v1/catalogo/productos', {
+      sku: productSku.value.trim(),
+      nombre: productName.value.trim(),
+      marca: productBrand.value.trim() || null,
+      descripcion: productDescription.value.trim() || null,
+      categoria_id: selectedProductCategory.value,
+      precio: productPrice.value,
+      variantes: [{
+        sku: `${productSku.value.trim()}-BASE`,
+        nombre_variante: 'Configuración principal',
+        atributos: attributes,
+        precio: productPrice.value,
+        precio_costo: 0
+      }],
+      imagenes: pendingImages.value.map((image) => ({ data_url: image.dataUrl, nombre: image.name }))
+    });
+    priceProducts.value.unshift({ id: response.data.id, name: response.data.nombre, sku: response.data.sku });
+    selectedPriceProduct.value = response.data.id;
+    isProductModalOpen.value = false;
+    await loadProductsList();
+    showFeedback(`Producto "${response.data.nombre || productName.value}" creado con éxito.`);
+  } catch (error: any) {
+    productFormMessage.value = error.response?.data?.detail || 'No se pudo guardar el producto en el catálogo.';
   } finally {
     isSavingProduct.value = false;
   }
 }
 
-// Cambio rápido de estado de ciclo de vida (KAN-291)
-async function handleQuickStatusChange(prod: Producto, nuevoEstado: string) {
-  try {
-    await apiClient.patch(`/productos/${prod.id}/estado`, { estado: nuevoEstado });
-    prod.estado = nuevoEstado;
-    showToast(`Estado de ${prod.sku} actualizado a "${nuevoEstado}".`);
-  } catch (err: any) {
-    alert(err.response?.data?.error || 'No se pudo actualizar el estado.');
-  }
+function formatPrice(value: number) {
+  return value.toLocaleString('es-BO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-// Eliminar producto (KAN-291)
-async function handleDeleteProduct(prod: Producto) {
-  const confirmed = confirm(`¿Estás seguro de eliminar el producto "${prod.nombre}" (${prod.sku})? Se eliminarán también sus imágenes asociadas.`);
-  if (!confirmed) return;
-
-  try {
-    await apiClient.delete(`/productos/${prod.id}`);
-    showToast(`Producto ${prod.sku} eliminado del catálogo.`);
-    await fetchCatalog();
-    if (selectedProduct.value?.id === prod.id) {
-      selectedProduct.value = null;
-    }
-  } catch (err: any) {
-    alert(err.response?.data?.error || 'Error al eliminar el producto.');
-  }
+function savePriceMatrix() {
+  priceMatrixSavedAt.value = new Date().toLocaleTimeString('es-BO', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
 }
+
+onMounted(() => {
+  loadCatalogCategories();
+  loadProductsList();
+});
 </script>
 
 <template>
-  <div class="space-y-8">
-    <!-- Toast de Notificación Flotante -->
-    <transition
-      enter-active-class="transform ease-out duration-300 transition"
-      enter-from-class="translate-y-2 opacity-0 sm:translate-y-0 sm:translate-x-2"
-      enter-to-class="translate-y-0 opacity-100 sm:translate-x-0"
-      leave-active-class="transition ease-in duration-100"
-      leave-from-class="opacity-100"
-      leave-to-class="opacity-0"
+  <div class="space-y-6">
+    <!-- Banner de Notificación / Feedback en Tiempo Real -->
+    <div
+      v-if="actionFeedback"
+      :class="[
+        'p-3.5 rounded-xl border flex items-center justify-between text-xs font-semibold animate-in fade-in slide-in-from-top-2 shadow-sm',
+        actionFeedback.type === 'success'
+          ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+          : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+      ]"
     >
-      <div 
-        v-if="toastSuccess" 
-        class="fixed bottom-5 right-5 z-50 flex items-center gap-3 bg-emerald-600 text-white px-4 py-3 rounded-2xl shadow-xl border border-emerald-500 text-xs font-semibold"
-      >
-        <CheckCircle2 class="w-4 h-4 text-emerald-200" />
-        <span>{{ toastSuccess }}</span>
+      <div class="flex items-center gap-2.5">
+        <CheckCircle2 v-if="actionFeedback.type === 'success'" class="w-4 h-4 text-emerald-600 shrink-0" />
+        <AlertTriangle v-else class="w-4 h-4 text-rose-600 shrink-0" />
+        <span>{{ actionFeedback.message }}</span>
       </div>
-    </transition>
+      <button @click="actionFeedback = null" class="p-1 rounded-md hover:bg-black/5 dark:hover:bg-white/5">
+        <X class="w-3.5 h-3.5" />
+      </button>
+    </div>
 
     <!-- Header Panel Administrativo -->
     <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
       <div>
-        <h1 class="text-2xl font-extrabold text-slate-900 dark:text-white flex items-center gap-3">
-          Gestión de Catálogo y Ciclo de Vida
-          <span class="text-xs px-2.5 py-1 rounded-full font-bold bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300 border border-blue-200 dark:border-blue-900/50">
-            RF-01 / RF-03
+        <div class="flex items-center gap-2.5">
+          <h1 class="text-2xl font-extrabold text-slate-900 dark:text-white">Panel de Control y Analítica</h1>
+          <span class="px-2 py-0.5 rounded-md bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 text-[10px] font-bold uppercase tracking-wider">
+            Admin ERP
           </span>
-        </h1>
-        <p class="text-xs text-slate-500 mt-1">Supervisión integral de catálogo, precios en variantes, ciclo de vida y galería multimedia en Supabase.</p>
-      </div>
-
-      <!-- Navegación de Pestañas y Acciones Principales -->
-      <div class="flex flex-wrap items-center gap-2">
-        <div class="bg-slate-100 dark:bg-slate-800 p-1 rounded-xl flex items-center border border-slate-200 dark:border-slate-700">
-          <!-- Pestaña 1: Productos (RF-01 / KAN-291) -->
-          <button
-            id="tab-btn-productos"
-            @click="activeTab = 'productos'"
-            :class="[
-              'px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5',
-              activeTab === 'productos'
-                ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            ]"
-          >
-            <Package class="w-3.5 h-3.5" />
-            <span>Productos y Precios (RF-01)</span>
-            <span class="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-300 font-bold">
-              {{ productos.length }}
-            </span>
-          </button>
-
-          <!-- Pestaña 2: Multimedia (RF-03 / KAN-19) -->
-          <button
-            id="tab-btn-multimedia"
-            @click="activeTab = 'multimedia'"
-            :class="[
-              'px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5',
-              activeTab === 'multimedia'
-                ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            ]"
-          >
-            <ImageIcon class="w-3.5 h-3.5" />
-            <span>Galería y Fotos (RF-03)</span>
-          </button>
-
-          <!-- Pestaña 3: Dashboard y KPIs -->
-          <button
-            id="tab-btn-dashboard"
-            @click="activeTab = 'dashboard'"
-            :class="[
-              'px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5',
-              activeTab === 'dashboard'
-                ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            ]"
-          >
-            <TrendingUp class="w-3.5 h-3.5" />
-            <span>Métricas</span>
-          </button>
         </div>
-
-        <!-- Botón Nuevo Producto (KAN-307) -->
-        <button
-          id="btn-add-new-product"
-          @click="openCreateModal"
-          class="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-sm flex items-center gap-1.5 transition-colors"
-        >
-          <Plus class="w-4 h-4" />
-          <span>+ Nuevo Producto</span>
+        <p class="text-xs text-slate-500 mt-1">Supervisión omnicanal de catálogo de productos, galería multimedia, sucursales y ventas en tiempo real.</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button @click="loadProductsList" :disabled="isLoadingProducts" class="p-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5" title="Recargar datos">
+          <RefreshCw :class="['w-3.5 h-3.5', isLoadingProducts ? 'animate-spin' : '']" />
+          <span class="hidden sm:inline">Actualizar</span>
         </button>
+        <HasRole :roles="['administrador', 'gerente_comercial']">
+          <button @click="openProductModal" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-1.5">
+            <Plus class="w-4 h-4" />
+            <span>Nuevo Producto</span>
+          </button>
+        </HasRole>
       </div>
     </div>
 
+    <!-- Selector de Pestañas del Panel de Administración -->
+    <div class="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 overflow-x-auto">
+      <button
+        @click="activeAdminTab = 'productos'"
+        :class="[
+          'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0',
+          activeAdminTab === 'productos'
+            ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+        ]"
+      >
+        <Package class="w-4 h-4" />
+        <span>Gestión de Catálogo & Multimedia (RF-01 / RF-03)</span>
+        <span :class="['px-2 py-0.5 rounded-full text-[10px] font-extrabold', activeAdminTab === 'productos' ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200']">
+          {{ productsList.length }}
+        </span>
+      </button>
+
+      <button
+        @click="activeAdminTab = 'categorias'"
+        :class="[
+          'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0',
+          activeAdminTab === 'categorias'
+            ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+        ]"
+      >
+        <FolderTree class="w-4 h-4" />
+        <span>Categorías & Matriz de Precios</span>
+      </button>
+
+      <button
+        @click="activeAdminTab = 'kpis'"
+        :class="[
+          'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0',
+          activeAdminTab === 'kpis'
+            ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+        ]"
+      >
+        <TrendingUp class="w-4 h-4" />
+        <span>KPIs & Operaciones ERP</span>
+      </button>
+    </div>
+
     <!-- ===================================================================== -->
-    <!-- SECCIÓN 1: TABLA DE GESTIÓN DE PRODUCTOS CON PRECIOS Y PAGINACIÓN     -->
+    <!-- PESTAÑA 1: GESTIÓN DE PRODUCTOS Y MULTIMEDIA (RF-01 / RF-03)          -->
     <!-- ===================================================================== -->
-    <div v-if="activeTab === 'productos'" class="space-y-6">
-      <div class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-        <!-- Barra de Búsqueda y Filtros -->
-        <div class="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col md:flex-row justify-between items-center gap-4 bg-slate-50/50 dark:bg-slate-950/40">
-          <div class="flex items-center gap-2">
-            <h2 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <Package class="w-4 h-4 text-blue-600" />
-              Catálogo de Productos en Supabase
-            </h2>
-            <span class="text-xs text-slate-400">Total: {{ filteredProductos.length }} registros filtrados</span>
+    <div v-if="activeAdminTab === 'productos'" class="space-y-6">
+      <!-- Tarjetas de Resumen Rápido de Catálogo -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+        <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="block text-[11px] font-semibold text-slate-500">Total en Catálogo</span>
+          <strong class="block text-2xl font-black text-slate-900 dark:text-white mt-1">{{ productsStats.total }}</strong>
+          <span class="text-[10px] text-slate-400">SKUs registrados</span>
+        </div>
+        <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="block text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">Publicados (Web/POS)</span>
+          <strong class="block text-2xl font-black text-emerald-700 dark:text-emerald-300 mt-1">{{ productsStats.publicados }}</strong>
+          <span class="text-[10px] text-slate-400">Visibles para venta</span>
+        </div>
+        <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="block text-[11px] font-semibold text-amber-600 dark:text-amber-400">En Borrador / Revisión</span>
+          <strong class="block text-2xl font-black text-amber-700 dark:text-amber-300 mt-1">{{ productsStats.borradores }}</strong>
+          <span class="text-[10px] text-slate-400">Edición en progreso</span>
+        </div>
+        <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="block text-[11px] font-semibold text-blue-600 dark:text-blue-400">Con Galería Multimedia</span>
+          <strong class="block text-2xl font-black text-blue-700 dark:text-blue-300 mt-1">{{ productsStats.conImagenes }}</strong>
+          <span class="text-[10px] text-slate-400">Fotos en Supabase Storage</span>
+        </div>
+      </div>
+
+      <!-- Barra de Filtros, Búsqueda y Paginación (KAN-291) -->
+      <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <!-- Buscador -->
+        <div class="relative flex-1 max-w-md">
+          <Search class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            v-model="searchProductQuery"
+            type="text"
+            placeholder="Buscar producto por SKU, nombre o marca..."
+            class="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          />
+        </div>
+
+        <div class="flex items-center gap-3 flex-wrap">
+          <!-- Filtro por Categoría (KAN-291) -->
+          <div class="flex items-center gap-1.5">
+            <span class="text-xs text-slate-400 font-semibold flex items-center gap-1">
+              <Layers class="w-3.5 h-3.5" /> Categoría:
+            </span>
+            <select
+              v-model="selectedCategoryFilter"
+              @change="currentPage = 1"
+              class="px-2.5 py-1 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500"
+            >
+              <option value="todas">Todas las categorías</option>
+              <option v-for="cat in catalogCategories" :key="cat.id" :value="cat.id">{{ cat.nombre }}</option>
+            </select>
           </div>
 
-          <div class="flex flex-wrap items-center gap-3 w-full md:w-auto">
-            <!-- Filtro de Estado (KAN-291) -->
-            <select
-              v-model="selectedEstadoFilter"
-              class="text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500 font-medium"
-            >
-              <option value="Todos">Todos los estados</option>
-              <option value="publicado">Publicado</option>
-              <option value="borrador">Borrador</option>
-              <option value="descontinuado">Descontinuado</option>
-              <option value="inactivo">Inactivo</option>
-            </select>
-
-            <!-- Filtro de Categoría -->
-            <select
-              v-model="selectedCategoriaFilter"
-              class="text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500 font-medium"
-            >
-              <option value="Todas">Todas las categorías</option>
-              <option v-for="cat in categorias" :key="cat.id" :value="cat.nombre">{{ cat.nombre }}</option>
-            </select>
-
-            <!-- Input de búsqueda reactivo -->
-            <div class="relative flex-1 sm:w-60">
-              <Search class="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                v-model="catalogSearch"
-                type="text"
-                placeholder="Buscar SKU, nombre o marca..."
-                class="w-full text-xs pl-8 pr-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-
-            <!-- Botón de recarga -->
+          <!-- Filtros por Estado del Ciclo de Vida (KAN-291) -->
+          <div class="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0">
+            <span class="text-xs text-slate-400 font-semibold mr-1 flex items-center gap-1">
+              <Filter class="w-3.5 h-3.5" /> Estado:
+            </span>
             <button
-              @click="fetchCatalog"
-              title="Refrescar catálogo"
-              class="p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
+              v-for="st in ['todos', 'publicado', 'borrador', 'inactivo', 'descontinuado']"
+              :key="st"
+              @click="statusFilter = st; currentPage = 1"
+              :class="[
+                'px-2.5 py-1 rounded-lg text-xs font-semibold capitalize transition-colors',
+                statusFilter === st
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+              ]"
             >
-              <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isLoadingCatalog }" />
+              {{ st }}
             </button>
           </div>
         </div>
+      </div>
 
-        <!-- Indicador de carga -->
-        <div v-if="isLoadingCatalog" class="py-16 text-center text-slate-400 space-y-2">
-          <Loader2 class="w-7 h-7 animate-spin mx-auto text-blue-600" />
-          <p class="text-xs">Sincronizando productos desde Supabase Postgres...</p>
+      <!-- Tabla de Ciclo de Vida de Productos (KAN-291) -->
+      <section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+        <div class="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h2 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Package class="w-4 h-4 text-blue-600" />
+              Catálogo de Productos y Estado de Ciclo de Vida (RF-01)
+            </h2>
+            <p class="text-xs text-slate-500 mt-0.5">Control de SKU único, precios base, galería multimedia y estados de publicación.</p>
+          </div>
+          <span class="text-[11px] font-semibold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg self-start sm:self-auto">
+            Mostrando {{ paginatedProducts.length }} de {{ filteredProductsList.length }} productos
+          </span>
         </div>
 
-        <!-- Sin resultados -->
-        <div v-else-if="filteredProductos.length === 0" class="py-14 text-center text-slate-400 space-y-3">
-          <Package class="w-10 h-10 text-slate-300 mx-auto" />
-          <p class="text-sm font-semibold">No se encontraron productos con los filtros seleccionados</p>
-          <p class="text-xs">Intenta ajustar tu búsqueda o registra un producto nuevo.</p>
-          <button 
-            @click="openCreateModal"
-            class="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold inline-flex items-center gap-2"
-          >
-            <Plus class="w-4 h-4" /> Registrar Producto
+        <div v-if="isLoadingProducts" class="p-12 text-center text-xs text-slate-500 flex flex-col items-center justify-center gap-3">
+          <RefreshCw class="w-6 h-6 animate-spin text-blue-600" />
+          <span>Cargando catálogo de productos y recursos multimedia...</span>
+        </div>
+
+        <div v-else-if="filteredProductsList.length === 0" class="p-12 text-center space-y-3">
+          <Package class="w-10 h-10 text-slate-300 dark:text-slate-700 mx-auto" />
+          <p class="text-sm font-bold text-slate-700 dark:text-slate-300">No se encontraron productos</p>
+          <p class="text-xs text-slate-400">Intenta con otro término de búsqueda o crea un nuevo producto en el catálogo.</p>
+          <button @click="openProductModal" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold shadow-sm">
+            + Crear Primer Producto
           </button>
         </div>
 
-        <!-- Tabla Paginada de Productos (KAN-291) -->
         <div v-else class="overflow-x-auto">
-          <table class="w-full text-left text-xs">
-            <thead class="bg-slate-50/80 dark:bg-slate-800/80 text-slate-500 font-semibold border-b border-slate-200 dark:border-slate-800">
+          <table class="w-full min-w-[800px] text-left text-xs">
+            <thead class="bg-slate-50 dark:bg-slate-800/80 text-slate-500 font-semibold border-b border-slate-200 dark:border-slate-800">
               <tr>
-                <th class="p-3.5 pl-5">Miniatura</th>
-                <th class="p-3.5">SKU (Único)</th>
-                <th class="p-3.5">Nombre y Marca</th>
+                <th class="p-3.5">Portada & Multimedia</th>
+                <th class="p-3.5">Producto / SKU</th>
                 <th class="p-3.5">Categoría</th>
-                <th class="p-3.5">Precio Venta</th>
-                <th class="p-3.5">Ciclo de Vida</th>
-                <th class="p-3.5">Galería</th>
-                <th class="p-3.5 pr-5 text-right">Acciones Rápidas</th>
+                <th class="p-3.5">Precio Web</th>
+                <th class="p-3.5">Ciclo de Vida (Estado)</th>
+                <th class="p-3.5 text-right">Acciones Rápidas</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-              <tr 
-                v-for="prod in paginatedProductos" 
-                :key="prod.id"
-                class="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors"
-              >
-                <!-- Miniatura -->
-                <td class="p-3.5 pl-5">
-                  <div class="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 overflow-hidden flex items-center justify-center shrink-0">
-                    <img 
-                      v-if="getCoverUrl(prod)" 
-                      :src="getCoverUrl(prod)!" 
-                      :alt="prod.nombre"
-                      class="w-full h-full object-cover"
-                    />
-                    <ImageIcon v-else class="w-4 h-4 text-slate-300 dark:text-slate-600" />
+              <tr v-for="prod in paginatedProducts" :key="prod.id" class="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                <!-- Portada y Multimedia (KAN-19 / KAN-78) -->
+                <td class="p-3.5">
+                  <div class="flex items-center gap-3">
+                    <div
+                      class="relative w-12 h-12 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden bg-slate-100 dark:bg-slate-800 shrink-0 cursor-pointer group shadow-sm"
+                      @click="selectedMultimediaProduct = prod"
+                      title="Abrir gestor multimedia"
+                    >
+                      <img
+                        v-if="prod.imagenes_producto && prod.imagenes_producto.length > 0"
+                        :src="(prod.imagenes_producto.find(i => i.es_principal) || prod.imagenes_producto[0]).url"
+                        :alt="prod.nombre"
+                        class="w-full h-full object-cover group-hover:scale-110 transition-transform"
+                      />
+                      <div v-else class="w-full h-full flex items-center justify-center text-slate-400">
+                        <ImageIcon class="w-5 h-5" />
+                      </div>
+                      <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                        <Eye class="w-4 h-4" />
+                      </div>
+                    </div>
+                    <div>
+                      <button
+                        @click="selectedMultimediaProduct = prod"
+                        class="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+                      >
+                        <ImageIcon class="w-3.5 h-3.5" />
+                        <span>{{ (prod.imagenes_producto && prod.imagenes_producto.length) || 0 }} foto(s)</span>
+                      </button>
+                      <span v-if="prod.imagenes_producto && prod.imagenes_producto.some(i => i.es_principal)" class="text-[9px] text-emerald-600 font-bold block">
+                        ★ Con Portada
+                      </span>
+                    </div>
                   </div>
                 </td>
 
-                <!-- SKU -->
+                <!-- Nombre y SKU con unicidad KAN-287 -->
                 <td class="p-3.5">
-                  <span class="font-mono font-bold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-md text-[11px] border border-slate-200 dark:border-slate-700">
-                    {{ prod.sku }}
-                  </span>
-                </td>
-
-                <!-- Nombre y Marca -->
-                <td class="p-3.5">
-                  <div class="font-semibold text-slate-900 dark:text-white text-xs">{{ prod.nombre }}</div>
-                  <div class="text-[11px] text-slate-400">{{ prod.marca || 'Sin marca' }}</div>
+                  <p class="font-bold text-slate-900 dark:text-white line-clamp-1">{{ prod.nombre }}</p>
+                  <div class="flex items-center gap-2 mt-0.5">
+                    <span class="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                      {{ prod.sku }}
+                    </span>
+                    <span v-if="prod.marca" class="text-[10px] text-slate-400">{{ prod.marca }}</span>
+                  </div>
                 </td>
 
                 <!-- Categoría -->
                 <td class="p-3.5">
-                  <span class="px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                  <span class="px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
                     {{ prod.categorias?.nombre || 'General' }}
                   </span>
                 </td>
 
-                <!-- Precio Venta (BOB) -->
+                <!-- Precio -->
                 <td class="p-3.5">
-                  <div class="font-bold text-slate-900 dark:text-white text-xs">
-                    BOB {{ (prod.precio || 0).toLocaleString('es-BO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
-                  </div>
-                  <div class="text-[10px] text-slate-400">Variante Estándar</div>
+                  <span class="font-bold text-slate-900 dark:text-white block">
+                    BOB {{ formatPrice(prod.precio || 0) }}
+                  </span>
+                  <span v-if="(prod as any).precio_costo" class="text-[10px] text-slate-400 block">
+                    Costo: BOB {{ formatPrice((prod as any).precio_costo) }}
+                  </span>
                 </td>
 
-                <!-- Selector rápido de Estado de Ciclo de Vida (KAN-291) -->
+                <!-- Ciclo de Vida: Selector rápido (KAN-291) -->
                 <td class="p-3.5">
-                  <select
-                    :value="prod.estado === 'archivado' ? 'descontinuado' : (prod.estado || 'publicado')"
-                    @change="handleQuickStatusChange(prod, ($event.target as HTMLSelectElement).value)"
-                    :class="[
-                      'text-[11px] font-bold rounded-lg px-2.5 py-1 border transition-colors cursor-pointer',
-                      prod.estado === 'publicado' 
-                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
-                        : prod.estado === 'borrador'
-                          ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800'
-                          : 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
-                    ]"
-                  >
-                    <option value="publicado">● Publicado</option>
-                    <option value="borrador">● Borrador</option>
-                    <option value="descontinuado">● Descontinuado</option>
-                    <option value="inactivo">● Inactivo</option>
-                  </select>
-                </td>
-
-                <!-- Multimedia badge -->
-                <td class="p-3.5">
-                  <button 
-                    @click="openMultimediaManager(prod)"
-                    class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300 hover:bg-blue-100 transition-colors"
-                  >
-                    <ImageIcon class="w-3.5 h-3.5" />
-                    <span>{{ prod.imagenes_producto?.length || 0 }} fotos</span>
-                  </button>
-                </td>
-
-                <!-- Acciones Rápidas (Editar, Gestionar Galería, Eliminar) -->
-                <td class="p-3.5 pr-5 text-right">
-                  <div class="flex items-center justify-end gap-1.5">
-                    <!-- Editar -->
-                    <button
-                      @click="openEditModal(prod)"
-                      title="Editar información del producto (KAN-307)"
-                      class="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition-colors"
+                  <div class="flex items-center gap-1.5">
+                    <select
+                      :value="prod.estado || 'publicado'"
+                      @change="quickChangeStatus(prod, ($event.target as HTMLSelectElement).value)"
+                      :class="[
+                        'px-2.5 py-1 rounded-lg text-xs font-bold outline-none border transition-colors cursor-pointer',
+                        prod.estado === 'publicado'
+                          ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                          : prod.estado === 'borrador'
+                          ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                          : prod.estado === 'inactivo'
+                          ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
+                          : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                      ]"
                     >
-                      <Edit2 class="w-3.5 h-3.5" />
-                    </button>
+                      <option value="publicado">Publicado</option>
+                      <option value="borrador">Borrador</option>
+                      <option value="inactivo">Inactivo</option>
+                      <option value="descontinuado">Descontinuado</option>
+                    </select>
+                  </div>
+                </td>
 
-                    <!-- Administrar Galería -->
+                <!-- Acciones Rápidas (KAN-291, KAN-19) -->
+                <td class="p-3.5 text-right">
+                  <div class="inline-flex items-center gap-1.5">
+                    <!-- Botón Gestor Multimedia (KAN-19) -->
                     <button
-                      @click="openMultimediaManager(prod)"
-                      title="Administrar galería multimedia (KAN-19)"
-                      class="p-1.5 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white transition-colors"
+                      type="button"
+                      @click="selectedMultimediaProduct = prod"
+                      class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 hover:bg-blue-100 transition-colors flex items-center gap-1"
+                      title="Administrar galería multimedia (Subir, ordenar y portada)"
                     >
                       <ImageIcon class="w-3.5 h-3.5" />
+                      <span class="hidden md:inline">Multimedia</span>
                     </button>
 
-                    <!-- Eliminar -->
+                    <!-- Botón Editar Producto (KAN-307) -->
                     <button
-                      @click="handleDeleteProduct(prod)"
-                      title="Eliminar producto"
-                      class="p-1.5 rounded-lg border border-rose-200 dark:border-rose-900/50 hover:bg-rose-50 text-rose-600 dark:hover:bg-rose-950/30 transition-colors"
+                      type="button"
+                      @click="openEditModalProduct(prod)"
+                      class="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      title="Editar datos del producto"
                     >
-                      <Trash2 class="w-3.5 h-3.5" />
+                      <Edit3 class="w-4 h-4" />
+                    </button>
+
+                    <!-- Botón Eliminar Producto (KAN-291) -->
+                    <button
+                      type="button"
+                      @click="productToDelete = prod"
+                      class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                      title="Eliminar producto"
+                    >
+                      <Trash2 class="w-4 h-4" />
                     </button>
                   </div>
                 </td>
               </tr>
             </tbody>
           </table>
+        </div>
 
-          <!-- Paginación Footer (KAN-291) -->
-          <div class="p-4 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50/40 dark:bg-slate-950/20 text-xs text-slate-500">
-            <div>
-              Mostrando página <strong class="text-slate-800 dark:text-slate-200">{{ currentPage }}</strong> de <strong class="text-slate-800 dark:text-slate-200">{{ totalPages }}</strong> 
-              ({{ filteredProductos.length }} productos en total)
-            </div>
-
-            <div class="flex items-center gap-2">
+        <!-- Paginador Interactivo (KAN-291) -->
+        <div v-if="totalPages > 1" class="p-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
+          <p class="text-xs text-slate-500">
+            Página <strong class="text-slate-800 dark:text-slate-200">{{ currentPage }}</strong> de <strong class="text-slate-800 dark:text-slate-200">{{ totalPages }}</strong>
+          </p>
+          <div class="flex items-center gap-1.5">
+            <button
+              :disabled="currentPage === 1"
+              @click="currentPage--"
+              class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center gap-1"
+            >
+              <ChevronLeft class="w-3.5 h-3.5" /> Anterior
+            </button>
+            <div class="flex items-center gap-1">
               <button
-                @click="currentPage--"
-                :disabled="currentPage === 1"
-                class="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 font-semibold flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white dark:hover:bg-slate-800 transition-colors"
+                v-for="p in totalPages"
+                :key="p"
+                @click="currentPage = p"
+                :class="[
+                  'w-7 h-7 rounded-lg text-xs font-bold flex items-center justify-center transition-colors',
+                  currentPage === p
+                    ? 'bg-blue-600 text-white'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                ]"
               >
-                <ChevronLeft class="w-3.5 h-3.5" /> Anterior
-              </button>
-
-              <div class="flex items-center gap-1">
-                <button
-                  v-for="p in totalPages"
-                  :key="p"
-                  @click="currentPage = p"
-                  :class="[
-                    'w-7 h-7 rounded-lg text-xs font-bold transition-all',
-                    currentPage === p 
-                      ? 'bg-blue-600 text-white shadow-sm' 
-                      : 'hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
-                  ]"
-                >
-                  {{ p }}
-                </button>
-              </div>
-
-              <button
-                @click="currentPage++"
-                :disabled="currentPage === totalPages"
-                class="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 font-semibold flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white dark:hover:bg-slate-800 transition-colors"
-              >
-                Siguiente <ChevronRight class="w-3.5 h-3.5" />
+                {{ p }}
               </button>
             </div>
+            <button
+              :disabled="currentPage === totalPages"
+              @click="currentPage++"
+              class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center gap-1"
+            >
+              Siguiente <ChevronRight class="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
-      </div>
+      </section>
     </div>
 
     <!-- ===================================================================== -->
-    <!-- SECCIÓN 2: GESTOR DE RECURSOS MULTIMEDIA (HISTORIA RF-03 / KAN-19)     -->
+    <!-- PESTAÑA 2: CATEGORÍAS & MATRIZ DE PRECIOS                             -->
     <!-- ===================================================================== -->
-    <div v-if="activeTab === 'multimedia'" class="space-y-6">
-      <div v-if="selectedProduct" class="space-y-4">
-        <ProductMultimediaManager
-          :producto="selectedProduct"
-          @close="selectedProduct = null"
-          @updated="fetchCatalog"
-        />
-      </div>
+    <div v-show="activeAdminTab === 'categorias'" class="space-y-6">
+      <!-- Gestión de Categorías -->
+      <section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+        <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div class="flex items-start gap-3">
+            <span class="p-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400">
+              <FolderTree class="w-5 h-5" />
+            </span>
+            <div>
+              <h2 class="text-sm font-bold text-slate-900 dark:text-white">Árbol de categorías</h2>
+              <p class="text-xs text-slate-500 mt-1">Organiza la jerarquía del catálogo y actualiza sus datos.</p>
+            </div>
+          </div>
+          <span class="text-[11px] font-semibold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 rounded-lg">
+            {{ categories.length }} categorías principales
+          </span>
+        </div>
 
-      <!-- Selector de producto para galería si ninguno está abierto -->
-      <div v-else class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 text-center space-y-4 shadow-sm">
-        <div class="w-14 h-14 bg-blue-50 dark:bg-blue-950/50 rounded-2xl flex items-center justify-center mx-auto text-blue-600 border border-blue-200 dark:border-blue-900">
-          <ImageIcon class="w-7 h-7" />
-        </div>
-        <div>
-          <h3 class="text-base font-bold text-slate-900 dark:text-white">Selecciona un producto para gestionar sus fotos</h3>
-          <p class="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-            Ve a la pestaña de "Productos y Precios" o elige uno a continuación para cargar imágenes en Supabase Storage, optimizarlas con Sharp y definir la portada.
-          </p>
-        </div>
-        <div class="flex flex-wrap justify-center gap-2 max-w-2xl mx-auto pt-2">
-          <button
-            v-for="p in productos"
-            :key="p.id"
-            @click="openMultimediaManager(p)"
-            class="px-3.5 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950/40 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-semibold border border-slate-200 dark:border-slate-700 transition-all flex items-center gap-2"
+        <div class="divide-y divide-slate-100 dark:divide-slate-800">
+          <div
+            v-for="category in visibleCategories"
+            :key="category.id"
+            class="min-h-16 px-5 py-3 flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+            :style="{ paddingLeft: `${1.25 + category.depth * 2}rem` }"
           >
-            <span class="font-mono text-blue-600 font-bold">{{ p.sku }}</span>
-            <span>{{ p.nombre }}</span>
-            <span class="text-slate-400 font-bold">BOB {{ p.precio || 0 }}</span>
-          </button>
+            <button
+              v-if="category.hasChildren"
+              type="button"
+              class="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-200"
+              :aria-label="expandedCategoryIds.has(category.id) ? `Contraer ${category.name}` : `Expandir ${category.name}`"
+              @click="toggleCategory(category.id)"
+            >
+              <ChevronDown v-if="expandedCategoryIds.has(category.id)" class="w-4 h-4" />
+              <ChevronRight v-else class="w-4 h-4" />
+            </button>
+            <span v-else class="w-6" aria-hidden="true" />
+
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span :class="category.depth === 0 ? 'text-sm font-bold' : 'text-sm font-medium'" class="text-slate-800 dark:text-slate-100">
+                  {{ category.name }}
+                </span>
+                <span v-if="category.hasChildren" class="text-[10px] text-slate-400">{{ category.children?.length }} subcategorías</span>
+              </div>
+              <p class="text-xs text-slate-500 truncate mt-0.5">{{ category.description }}</p>
+            </div>
+
+            <HasRole :roles="['administrador', 'gerente_comercial']">
+              <button
+                type="button"
+                class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40"
+                :aria-label="`Editar ${category.name}`"
+                @click="openEditModal(category)"
+              >
+                <Edit3 class="w-3.5 h-3.5" />
+                Editar
+              </button>
+            </HasRole>
+          </div>
         </div>
-      </div>
+      </section>
+
+      <!-- Matriz de precios por sucursal y canal -->
+      <HasRole :roles="['administrador', 'gerente_comercial']">
+        <section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+          <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div class="flex items-start gap-3">
+              <span class="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400">
+                <DollarSign class="w-5 h-5" />
+              </span>
+              <div>
+                <h2 class="text-sm font-bold text-slate-900 dark:text-white">Matriz de precios</h2>
+                <p class="text-xs text-slate-500 mt-1">Define precios diferenciados por sucursal y canal de venta.</p>
+              </div>
+            </div>
+            <label class="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
+              Producto
+              <select v-model="selectedPriceProduct" class="min-w-56 px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs outline-none focus:border-emerald-500">
+                <option v-for="product in priceProducts" :key="product.id" :value="product.id">{{ product.name }}</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 p-5 border-b border-slate-100 dark:border-slate-800">
+            <div class="px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
+              <span class="block text-[11px] text-slate-500">Precio mínimo</span>
+              <strong class="block text-lg text-slate-900 dark:text-white mt-1">BOB {{ formatPrice(priceSummary.minimum) }}</strong>
+            </div>
+            <div class="px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
+              <span class="block text-[11px] text-slate-500">Precio máximo</span>
+              <strong class="block text-lg text-slate-900 dark:text-white mt-1">BOB {{ formatPrice(priceSummary.maximum) }}</strong>
+            </div>
+            <div class="px-4 py-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/30">
+              <span class="block text-[11px] text-emerald-700 dark:text-emerald-400">Promedio de matriz</span>
+              <strong class="block text-lg text-emerald-800 dark:text-emerald-300 mt-1">BOB {{ formatPrice(priceSummary.average) }}</strong>
+            </div>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full min-w-[680px] text-left text-xs">
+              <thead class="bg-slate-50 dark:bg-slate-800 text-slate-500 font-semibold">
+                <tr>
+                  <th class="p-4">Sucursal</th>
+                  <th class="p-4"><span class="inline-flex items-center gap-1.5"><ShoppingBag class="w-3.5 h-3.5 text-blue-500" /> Web</span></th>
+                  <th class="p-4"><span class="inline-flex items-center gap-1.5"><Store class="w-3.5 h-3.5 text-emerald-500" /> POS</span></th>
+                  <th class="p-4"><span class="inline-flex items-center gap-1.5"><Users class="w-3.5 h-3.5 text-indigo-500" /> B2B</span></th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                <tr v-for="row in priceMatrix" :key="row.branch" class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                  <th class="p-4 font-semibold text-slate-800 dark:text-slate-200">{{ row.branch }}</th>
+                  <td class="p-3">
+                    <label class="sr-only">Precio Web en {{ row.branch }}</label>
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-slate-400">BOB</span>
+                      <input v-model.number="row.web" type="number" min="0" step="0.01" class="w-28 px-2.5 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20" />
+                    </div>
+                  </td>
+                  <td class="p-3">
+                    <label class="sr-only">Precio POS en {{ row.branch }}</label>
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-slate-400">BOB</span>
+                      <input v-model.number="row.pos" type="number" min="0" step="0.01" class="w-28 px-2.5 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20" />
+                    </div>
+                  </td>
+                  <td class="p-3">
+                    <label class="sr-only">Precio B2B en {{ row.branch }}</label>
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-slate-400">BOB</span>
+                      <input v-model.number="row.b2b" type="number" min="0" step="0.01" class="w-28 px-2.5 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20" />
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="p-5 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <p class="text-[11px] text-slate-500">
+              {{ priceMatrixSavedAt ? `Matriz guardada a las ${priceMatrixSavedAt}.` : 'Los cambios se aplican al producto seleccionado en esta sesión.' }}
+            </p>
+            <button type="button" class="inline-flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm" @click="savePriceMatrix">
+              <Save class="w-3.5 h-3.5" />
+              Guardar matriz
+            </button>
+          </div>
+        </section>
+      </HasRole>
     </div>
 
     <!-- ===================================================================== -->
-    <!-- SECCIÓN 3: DASHBOARD GENERAL Y KPIS                                   -->
+    <!-- PESTAÑA 3: KPIS & OPERACIONES ERP                                     -->
     <!-- ===================================================================== -->
-    <div v-if="activeTab === 'dashboard'" class="space-y-8">
+    <div v-show="activeAdminTab === 'kpis'" class="space-y-6">
       <!-- Cards de KPIs Clave (RF-46) -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
           <div class="flex justify-between items-center text-slate-500">
             <span class="text-xs font-semibold">Ventas Totales Hoy</span>
             <span class="p-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 rounded-lg"><DollarSign class="w-4 h-4" /></span>
@@ -723,7 +1169,7 @@ async function handleDeleteProduct(prod: Producto) {
           </span>
         </div>
 
-        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
           <div class="flex justify-between items-center text-slate-500">
             <span class="text-xs font-semibold">Ventas del Mes</span>
             <span class="p-2 bg-blue-50 dark:bg-blue-950/40 text-blue-600 rounded-lg"><TrendingUp class="w-4 h-4" /></span>
@@ -734,7 +1180,7 @@ async function handleDeleteProduct(prod: Producto) {
           </span>
         </div>
 
-        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
           <div class="flex justify-between items-center text-slate-500">
             <span class="text-xs font-semibold">Órdenes Procesadas Hoy</span>
             <span class="p-2 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 rounded-lg"><ShoppingBag class="w-4 h-4" /></span>
@@ -743,7 +1189,7 @@ async function handleDeleteProduct(prod: Producto) {
           <span class="text-[11px] text-slate-400">Canal Web (22) / POS (12)</span>
         </div>
 
-        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
           <div class="flex justify-between items-center text-slate-500">
             <span class="text-xs font-semibold">Ticket Promedio</span>
             <span class="p-2 bg-purple-50 dark:bg-purple-950/40 text-purple-600 rounded-lg"><Users class="w-4 h-4" /></span>
@@ -756,12 +1202,12 @@ async function handleDeleteProduct(prod: Producto) {
       <!-- Grilla de Tablas Operativas -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <!-- Tabla de Órdenes Recientes -->
-        <div class="lg:col-span-2 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        <div class="lg:col-span-2 bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <div class="flex justify-between items-center">
             <h3 class="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
-              <FileText class="w-4 h-4 text-blue-500" /> Órdenes y Ventas Recientes
+              <FileText class="w-4 h-4 text-blue-500" /> Órdenes y Ventas Recientes (RF-27 al RF-37)
             </h3>
-            <button @click="activeTab = 'productos'" class="text-xs text-blue-600 hover:underline font-semibold">Ver Catálogo</button>
+            <router-link to="/admin" class="text-xs text-blue-600 hover:underline font-semibold">Ver todas</router-link>
           </div>
 
           <div class="overflow-x-auto">
@@ -797,7 +1243,7 @@ async function handleDeleteProduct(prod: Producto) {
         </div>
 
         <!-- Alertas de Stock y Quiebre (RF-42) -->
-        <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <div class="flex items-center gap-2 text-rose-600 font-bold text-sm">
             <AlertTriangle class="w-4 h-4" />
             <span>Alertas de Quiebre de Stock (RF-42)</span>
@@ -808,7 +1254,7 @@ async function handleDeleteProduct(prod: Producto) {
             <div
               v-for="alert in lowStockAlerts"
               :key="alert.sku"
-              class="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 rounded-xl space-y-1"
+              class="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 rounded-lg space-y-1"
             >
               <div class="flex justify-between items-start">
                 <span class="text-xs font-bold text-slate-800 dark:text-slate-200">{{ alert.nombre }}</span>
@@ -822,175 +1268,347 @@ async function handleDeleteProduct(prod: Producto) {
               </div>
             </div>
           </div>
+
+          <button class="w-full py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg mt-2">
+            Disparar Solicitud a Compras (ERP)
+          </button>
         </div>
       </div>
     </div>
 
-    <!-- ===================================================================== -->
-    <!-- MODAL: FORMULARIO REACTIVO DE ADMINISTRACIÓN DE PRODUCTO (KAN-307)     -->
-    <!-- ===================================================================== -->
+    <!-- Modal de Edición de Categoría -->
     <div
-      v-if="showProductModal"
-      class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+      v-if="editingCategory"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="category-modal-title"
+      @click.self="editingCategory = null"
     >
-      <div class="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full p-6 border border-slate-200 dark:border-slate-800 shadow-2xl space-y-5 my-8">
-        <!-- Header Modal -->
-        <div class="flex justify-between items-center border-b border-slate-200 dark:border-slate-800 pb-3">
-          <div class="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-base">
-            <Package class="w-5 h-5 text-blue-600" />
-            <span>{{ isEditing ? 'Editar Producto y Precio' : 'Crear Nuevo Producto en Catálogo' }}</span>
+      <div class="w-full max-w-lg bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700">
+        <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 id="category-modal-title" class="text-base font-bold text-slate-900 dark:text-white">Editar categoría</h2>
+            <p class="text-xs text-slate-500 mt-1">Actualiza la información visible en el catálogo.</p>
           </div>
-          <button @click="showProductModal = false" class="text-slate-400 hover:text-slate-600">
-            <X class="w-5 h-5" />
+          <button
+            type="button"
+            class="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+            aria-label="Cerrar modal"
+            @click="editingCategory = null"
+          >
+            <X class="w-4 h-4" />
           </button>
         </div>
 
-        <!-- Banner de Error Backend -->
-        <div v-if="productModalError" class="p-3 bg-rose-50 text-rose-700 text-xs rounded-xl border border-rose-200 flex items-center gap-2">
-          <AlertCircle class="w-4 h-4 shrink-0" />
-          <span>{{ productModalError }}</span>
-        </div>
-
-        <form @submit.prevent="handleSaveProduct" class="space-y-4 text-xs">
-          <!-- SKU y Marca -->
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                SKU Único * 
-                <span class="text-[10px] text-slate-400 font-normal">(Mayúsculas)</span>
-              </label>
-              <input
-                v-model="productForm.sku"
-                type="text"
-                placeholder="Ej: TEC-KEY-LOGI"
-                :class="[
-                  'w-full p-2.5 font-mono uppercase bg-slate-50 dark:bg-slate-800 border rounded-xl focus:ring-2 focus:ring-blue-500',
-                  formErrors.sku ? 'border-rose-400 ring-1 ring-rose-400' : 'border-slate-200 dark:border-slate-700'
-                ]"
-              />
-              <span v-if="formErrors.sku" class="text-[11px] text-rose-500 font-semibold block mt-1">
-                {{ formErrors.sku }}
-              </span>
-            </div>
-
-            <div>
-              <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Marca / Fabricante</label>
-              <input
-                v-model="productForm.marca"
-                type="text"
-                placeholder="Ej: Logitech, Dell, Sony"
-                class="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          </div>
-
-          <!-- Nombre Comercial -->
-          <div>
-            <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Nombre Comercial del Producto *</label>
+        <form class="p-5 space-y-4" @submit.prevent="saveCategory">
+          <label class="block space-y-1.5">
+            <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Nombre</span>
             <input
-              v-model="productForm.nombre"
+              v-model="editingName"
               type="text"
-              placeholder="Ej: Teclado Mecánico Inalámbrico MX Keys Mini"
-              :class="[
-                'w-full p-2.5 bg-slate-50 dark:bg-slate-800 border rounded-xl focus:ring-2 focus:ring-blue-500',
-                formErrors.nombre ? 'border-rose-400 ring-1 ring-rose-400' : 'border-slate-200 dark:border-slate-700'
-              ]"
+              required
+              autofocus
+              class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
             />
-            <span v-if="formErrors.nombre" class="text-[11px] text-rose-500 font-semibold block mt-1">
-              {{ formErrors.nombre }}
-            </span>
-          </div>
+          </label>
 
-          <!-- PRECIOS: Precio Venta y Precio Costo (Persistencia en variantes) -->
-          <div class="grid grid-cols-2 gap-3 p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/50 rounded-2xl">
-            <div>
-              <label class="block font-semibold text-slate-800 dark:text-blue-300 mb-1 flex items-center gap-1">
-                <DollarSign class="w-3.5 h-3.5 text-blue-600" />
-                <span>Precio Venta (BOB) *</span>
-              </label>
-              <input
-                v-model.number="productForm.precio"
-                type="number"
-                step="0.01"
-                min="0"
-                placeholder="0.00"
-                class="w-full p-2.5 font-bold text-slate-900 dark:text-white bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500"
-              />
-              <span v-if="formErrors.precio" class="text-[11px] text-rose-500 font-semibold block mt-1">
-                {{ formErrors.precio }}
-              </span>
-            </div>
-
-            <div>
-              <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Costo Adquisición (BOB)</label>
-              <input
-                v-model.number="productForm.precio_costo"
-                type="number"
-                step="0.01"
-                min="0"
-                placeholder="0.00"
-                class="w-full p-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          </div>
-
-          <!-- Categoría y Estado del Ciclo de Vida -->
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Categoría</label>
-              <select
-                v-model="productForm.categoria_id"
-                class="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">Sin categoría asignada</option>
-                <option v-for="c in categorias" :key="c.id" :value="c.id">{{ c.nombre }}</option>
-              </select>
-            </div>
-
-            <div>
-              <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Estado de Ciclo de Vida</label>
-              <select
-                v-model="productForm.estado"
-                class="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 font-semibold"
-              >
-                <option value="publicado">● Publicado (Visible en tienda)</option>
-                <option value="borrador">● Borrador (En edición interna)</option>
-                <option value="descontinuado">● Descontinuado (Archivado)</option>
-                <option value="inactivo">● Inactivo (Pausado temporal)</option>
-              </select>
-            </div>
-          </div>
-
-          <!-- Descripción Técnica -->
-          <div>
-            <label class="block font-semibold text-slate-700 dark:text-slate-300 mb-1">Descripción y Especificaciones</label>
+          <label class="block space-y-1.5">
+            <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Descripción</span>
             <textarea
-              v-model="productForm.descripcion"
+              v-model="editingDescription"
               rows="3"
-              placeholder="Detalle de características, especificaciones técnicas, compatibilidad..."
-              class="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500"
-            ></textarea>
-          </div>
+              class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none"
+            />
+          </label>
 
-          <!-- Botones de Acción -->
-          <div class="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+          <div class="flex justify-end gap-2 pt-2">
             <button
               type="button"
-              @click="showProductModal = false"
-              class="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl font-semibold"
+              class="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              @click="editingCategory = null"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              :disabled="isSavingProduct"
-              class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold flex items-center gap-1.5 shadow-sm transition-colors disabled:opacity-60"
+              class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm"
             >
-              <Loader2 v-if="isSavingProduct" class="w-3.5 h-3.5 animate-spin" />
-              <span>{{ isEditing ? 'Guardar Cambios' : 'Registrar y Continuar' }}</span>
+              <Save class="w-3.5 h-3.5" />
+              Guardar cambios
             </button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Modal de Nuevo Producto con Atributos Dinámicos -->
+    <div
+      v-if="isProductModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="product-modal-title"
+      @click.self="isProductModalOpen = false"
+    >
+      <div class="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700">
+        <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 id="product-modal-title" class="text-base font-bold text-slate-900 dark:text-white">Nuevo producto</h2>
+            <p class="text-xs text-slate-500 mt-1">Selecciona una categoría para cargar sus atributos sugeridos.</p>
+          </div>
+          <button type="button" class="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Cerrar modal" @click="isProductModalOpen = false">
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <form class="p-5 space-y-5" @submit.prevent="saveProduct">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <label class="block space-y-1.5">
+              <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Nombre del producto</span>
+              <input v-model="productName" type="text" required placeholder="Ej. Laptop Lenovo ThinkPad" class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none" />
+            </label>
+            <label class="block space-y-1.5">
+              <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">SKU</span>
+              <input v-model="productSku" type="text" required placeholder="Ej. LAP-LEN-T14" class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none uppercase" />
+            </label>
+            <label class="block space-y-1.5">
+              <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Marca</span>
+              <input v-model="productBrand" type="text" placeholder="Ej. Lenovo" class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none" />
+            </label>
+            <label class="block space-y-1.5">
+              <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Precio web (BOB)</span>
+              <input v-model.number="productPrice" type="number" min="0" step="0.01" required placeholder="0.00" class="w-full px-3 py-2.5 text-sm font-semibold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none" />
+            </label>
+          </div>
+
+          <label class="block space-y-1.5">
+            <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Descripción</span>
+            <textarea v-model="productDescription" rows="2" placeholder="Describe las características principales del producto" class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none" />
+          </label>
+
+          <label class="block space-y-1.5">
+            <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Categoría</span>
+            <select
+              :value="selectedProductCategory"
+              required
+              class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+              @change="updateProductCategory(($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">Selecciona una categoría</option>
+              <option v-for="category in catalogCategories" :key="category.id" :value="category.id">{{ category.nombre }}</option>
+            </select>
+          </label>
+
+          <section class="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+            <div class="p-4 bg-slate-50 dark:bg-slate-800/60 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <h3 class="text-sm font-bold text-slate-800 dark:text-slate-100">Imágenes del producto</h3>
+                <p class="text-[11px] text-slate-500 mt-1">Hasta 5 archivos JPEG, PNG o WebP. Máximo 5 MB por imagen.</p>
+              </div>
+              <button type="button" class="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white border border-slate-300 hover:border-blue-400 text-xs font-semibold text-slate-700" @click="imageInput?.click()">
+                <ImagePlus class="w-4 h-4 text-blue-600" />
+                Añadir imágenes
+              </button>
+              <input ref="imageInput" class="hidden" type="file" accept="image/jpeg,image/png,image/webp" multiple @change="addProductImages" />
+            </div>
+            <div v-if="pendingImages.length" class="p-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div v-for="(image, index) in pendingImages" :key="image.dataUrl" class="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-100 aspect-square group">
+                <img :src="image.dataUrl" :alt="image.name" class="w-full h-full object-cover" />
+                <div class="absolute inset-x-0 bottom-0 p-2 bg-slate-950/75 text-white">
+                  <p class="truncate text-[10px] font-semibold">{{ image.name }}</p>
+                  <p class="text-[10px] text-slate-300">{{ formatImageSize(image.size) }}</p>
+                </div>
+                <button type="button" class="absolute top-2 right-2 p-1.5 rounded-md bg-white text-rose-600 shadow-sm opacity-0 group-hover:opacity-100" :aria-label="`Eliminar ${image.name}`" @click="removeProductImage(index)">
+                  <X class="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+            <div v-else class="p-6 text-center text-xs text-slate-400">Agrega una imagen para mostrar este producto en Marketplace.</div>
+          </section>
+
+          <div class="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+            <div class="p-4 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between gap-3">
+              <div>
+                <h3 class="text-sm font-bold text-slate-800 dark:text-slate-100">Atributos del producto</h3>
+                <p class="text-[11px] text-slate-500 mt-1">Los campos cambian automáticamente según la categoría.</p>
+              </div>
+              <button type="button" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-950/40" @click="addCustomAttribute">
+                <Plus class="w-3.5 h-3.5" />
+                Añadir campo
+              </button>
+            </div>
+
+            <div v-if="productAttributeFields.length" class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div v-for="field in productAttributeFields" :key="field.id" class="relative space-y-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <input v-if="field.custom" v-model="field.label" type="text" class="min-w-0 flex-1 px-2 py-1 text-xs font-semibold bg-transparent border-b border-slate-300 dark:border-slate-700 focus:border-blue-500 outline-none" aria-label="Nombre del atributo personalizado" />
+                  <span v-else class="text-xs font-semibold text-slate-700 dark:text-slate-300">{{ field.label }}</span>
+                  <button v-if="field.custom" type="button" class="p-1 text-slate-400 hover:text-rose-600" :aria-label="`Eliminar ${field.label}`" @click="removeAttribute(field.id)">
+                    <X class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <select v-if="field.type === 'select'" v-model="field.value" class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500">
+                  <option value="">Selecciona una opción</option>
+                  <option v-for="option in field.options" :key="option" :value="option">{{ option }}</option>
+                </select>
+                <input v-else v-model="field.value" :type="field.type" :placeholder="field.type === 'number' ? 'Ingresa un valor' : 'Ingresa un valor'" class="w-full px-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+              </div>
+            </div>
+            <div v-else class="p-8 text-center text-xs text-slate-400">
+              Selecciona una categoría para mostrar sus atributos.
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-2 pt-1">
+            <button type="button" class="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800" @click="isProductModalOpen = false">Cancelar</button>
+            <button type="submit" :disabled="isSavingProduct" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-semibold shadow-sm">
+              <Save class="w-3.5 h-3.5" />
+              {{ isSavingProduct ? 'Guardando...' : 'Guardar producto' }}
+            </button>
+          </div>
+          <p v-if="productFormMessage" class="text-xs font-medium text-rose-600">{{ productFormMessage }}</p>
+        </form>
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- MODAL DE GESTIÓN MULTIMEDIA (KAN-19 / RF-03)                         -->
+    <!-- Subtareas: KAN-75, KAN-76, KAN-77, KAN-78                           -->
+    <!-- =================================================================== -->
+    <div
+      v-if="selectedMultimediaProduct"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-3 sm:p-6 overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+      @click.self="selectedMultimediaProduct = null"
+    >
+      <div class="w-full max-w-4xl max-h-[92vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-2 sm:p-4">
+        <ProductMultimediaManager
+          :producto="selectedMultimediaProduct"
+          @close="selectedMultimediaProduct = null"
+          @updated="handleMultimediaUpdated"
+        />
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- MODAL FORMULARIO REACTIVO DE EDICIÓN DE PRODUCTO (KAN-307 / RF-01)  -->
+    <!-- =================================================================== -->
+    <div
+      v-if="isEditModalOpen && editingProduct"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4 overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+      @click.self="isEditModalOpen = false"
+    >
+      <div class="w-full max-w-xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-5">
+        <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+          <div>
+            <h3 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Edit3 class="w-4 h-4 text-blue-600" />
+              Editar Producto (RF-01 / KAN-307)
+            </h3>
+            <p class="text-xs text-slate-500 mt-0.5">Actualiza las características, precio y estado del ciclo de vida.</p>
+          </div>
+          <button @click="isEditModalOpen = false" class="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <form @submit.prevent="submitEditProduct" class="space-y-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">SKU *</label>
+              <input v-model="editingProduct.sku" type="text" required class="w-full px-3 py-2 text-xs font-mono uppercase bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nombre *</label>
+              <input v-model="editingProduct.nombre" type="text" required class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Marca</label>
+              <input v-model="editingProduct.marca" type="text" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Precio Web (BOB) *</label>
+              <input v-model.number="editingProduct.precio" type="number" min="0" step="0.01" required class="w-full px-3 py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Precio Costo (BOB)</label>
+              <input v-model.number="editingProduct.precio_costo" type="number" min="0" step="0.01" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Categoría</label>
+              <select v-model="editingProduct.categoria_id" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500">
+                <option value="">Sin categoría asignada</option>
+                <option v-for="cat in catalogCategories" :key="cat.id" :value="cat.id">{{ cat.nombre }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Estado de Ciclo de Vida</label>
+              <select v-model="editingProduct.estado" class="w-full px-3 py-2 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500">
+                <option value="publicado">Publicado (Visible en tienda)</option>
+                <option value="borrador">Borrador (Oculto)</option>
+                <option value="inactivo">Inactivo (Pausado)</option>
+                <option value="descontinuado">Descontinuado (Sin reposición)</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descripción</label>
+            <textarea v-model="editingProduct.descripcion" rows="3" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 resize-none"></textarea>
+          </div>
+
+          <div v-if="editFormError" class="p-2.5 rounded-lg bg-rose-50 text-rose-600 border border-rose-200 text-xs font-medium">
+            {{ editFormError }}
+          </div>
+
+          <div class="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <button type="button" @click="isEditModalOpen = false" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">Cancelar</button>
+            <button type="submit" :disabled="isSavingEdit" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm disabled:opacity-60">
+              <Save class="w-3.5 h-3.5" />
+              {{ isSavingEdit ? 'Guardando...' : 'Guardar Cambios' }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- MODAL DE CONFIRMACIÓN DE ELIMINACIÓN DE PRODUCTO (KAN-291)          -->
+    <!-- =================================================================== -->
+    <div
+      v-if="productToDelete"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div class="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-4">
+        <div class="w-12 h-12 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
+          <Trash2 class="w-6 h-6" />
+        </div>
+        <div class="text-center space-y-1">
+          <h3 class="text-base font-bold text-slate-900 dark:text-white">¿Eliminar este producto?</h3>
+          <p class="text-xs text-slate-500">
+            Se eliminará el producto <strong class="text-slate-800 dark:text-slate-200">"{{ productToDelete.nombre }}"</strong> (SKU: {{ productToDelete.sku }}) junto con todos sus recursos multimedia asociados en Supabase Storage.
+          </p>
+        </div>
+        <div class="flex justify-center gap-3 pt-2">
+          <button @click="productToDelete = null" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">
+            Cancelar
+          </button>
+          <button @click="confirmDeleteProduct" :disabled="isDeletingProduct" class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-sm disabled:opacity-60">
+            {{ isDeletingProduct ? 'Eliminando...' : 'Sí, eliminar producto' }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
