@@ -12,6 +12,7 @@ import {
   CheckCircle, 
   Store 
 } from 'lucide-vue-next';
+import { apiClient } from '@/api/client';
 
 interface PosItem {
   id: string;
@@ -60,20 +61,76 @@ function removeItem(id: string) {
   cartItems.value = cartItems.value.filter(i => i.id !== id);
 }
 
-function suspenderVenta() {
+async function suspenderVenta() {
   if (cartItems.value.length === 0) return;
-  suspendedSales.value.push({
+
+  const venta = {
     id: Date.now().toString(),
-    ticket: `Ticket #${suspendedSales.value.length + 1}`,
-    total: total.value,
-    items: [...cartItems.value]
-  });
-  cartItems.value = [];
+    cliente_referencia: 'POS-CLIENTE',
+    items: cartItems.value.map(item => ({
+      variante_id: crypto.randomUUID(),
+      sku: item.sku,
+      nombre: item.nombre,
+      cantidad: item.cantidad,
+      precio_unitario: item.precio
+    })),
+    subtotal: total.value
+  };
+
+  try {
+    await apiClient.post(
+      '/api/v1/pos/ventas/suspender',
+      venta
+    );
+
+    cartItems.value = [];
+
+    await cargarVentasSuspendidas();
+  } catch (error) {
+    console.error('Error al suspender la venta:', error);
+  }
 }
 
-function reanudarVenta(index: number) {
-  const sale = suspendedSales.value.splice(index, 1)[0];
-  cartItems.value = sale.items;
+async function cargarVentasSuspendidas() {
+  try {
+    const response = await apiClient.get(
+      '/api/v1/pos/ventas/suspendidas'
+    );
+
+    suspendedSales.value = response.data;
+  } catch (error) {
+    console.error(
+      'Error al cargar ventas suspendidas:',
+      error
+    );
+  }
+}
+
+async function reanudarVenta(index: number) {
+  const sale = suspendedSales.value[index];
+
+  if (!sale) return;
+
+  try {
+    const response = await apiClient.delete(
+      `/api/v1/pos/ventas/suspendidas/${sale.id}`
+    );
+
+    cartItems.value = response.data.items.map((item: any) => ({
+      id: item.variante_id,
+      sku: item.sku,
+      nombre: item.nombre,
+      precio: Number(item.precio_unitario),
+      cantidad: item.cantidad
+    }));
+
+    suspendedSales.value.splice(index, 1);
+  } catch (error) {
+    console.error(
+      'Error al recuperar la venta:',
+      error
+    );
+  }
 }
 
 function finalizarCobro() {
