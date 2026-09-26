@@ -153,7 +153,7 @@ function agregarAlCarrito(prod: any) {
             :alt="prod.nombre"
             class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
           />
-          
+          <!-- Boton de corazon Wishlist -->
           <button
             type="button"
             class="absolute top-2.5 right-2.5 p-2 rounded-full bg-white/90 text-slate-500 hover:text-rose-500 hover:bg-white shadow-sm backdrop-blur-sm transition-colors"
