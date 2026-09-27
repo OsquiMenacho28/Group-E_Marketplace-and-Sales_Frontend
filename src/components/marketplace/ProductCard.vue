@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { MarketplaceProduct } from '@/types';
 import { Heart, Layers, Star, ShoppingBag } from 'lucide-vue-next';
+import StockBadge from '@/components/StockBadge.vue';
 
 defineProps<{
   product: MarketplaceProduct;
@@ -82,6 +83,10 @@ defineEmits<{
           <span :class="product.stock > 0 ? 'text-emerald-600 font-semibold' : 'text-rose-500 font-semibold'">
             {{ product.stock > 0 ? `${product.stock} disp.` : 'Agotado' }}
           </span>
+        </div>
+        <!-- RF-07: Badge reactivo de disponibilidad (RIO-INV-01 + caché Redis 30s) -->
+        <div class="mt-1.5">
+          <StockBadge :sku="product.sku" />
         </div>
       </div>
 
