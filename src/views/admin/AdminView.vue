@@ -8,7 +8,8 @@ import {
   Package, 
   FileText, 
   AlertTriangle,
-  ArrowUpRight 
+  ArrowUpRight,
+  Settings2
 } from 'lucide-vue-next';
 
 const kpis = ref({
@@ -30,6 +31,43 @@ const lowStockAlerts = ref([
   { sku: 'MON-LG-27GP', nombre: 'Monitor LG UltraGear 27"', stockActual: 2, puntoReorden: 5 },
   { sku: 'LAP-DELL-XPS15', nombre: 'Laptop Dell XPS 15', stockActual: 3, puntoReorden: 8 }
 ]);
+
+const sucursales = ref([
+  {
+    id: 'suc-central',
+    nombre: 'Sucursal Central - La Paz',
+    precios: {
+      web: 'Lista Web Retail',
+      pos: 'Lista POS Retail',
+      b2b: 'Lista B2B Corporativa'
+    }
+  },
+  {
+    id: 'suc-sur',
+    nombre: 'Sucursal Sur - La Paz',
+    precios: {
+      web: 'Lista Web Retail',
+      pos: 'Lista POS Retail',
+      b2b: 'Lista B2B Corporativa'
+    }
+  },
+  {
+    id: 'suc-calacoto',
+    nombre: 'Sucursal Calacoto',
+    precios: {
+      web: 'Lista Web Retail',
+      pos: 'Lista POS Retail',
+      b2b: 'Lista B2B Corporativa'
+    }
+  }
+]);
+
+const listasPrecios = [
+  'Lista Web Retail',
+  'Lista POS Retail',
+  'Lista B2B Corporativa',
+  'Lista Promocional'
+];
 </script>
 
 <template>
@@ -166,6 +204,142 @@ const lowStockAlerts = ref([
         <button class="w-full py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg mt-2">
           Disparar Solicitud a Compras (ERP)
         </button>
+      </div>
+
+            <!-- Matriz de asignación de precios (KAN-298) -->
+      <div
+        class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4"
+      >
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+          <div>
+            <h3 class="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+              <Settings2 class="w-4 h-4 text-blue-500" />
+              Matriz de asignación de precios
+            </h3>
+
+            <p class="text-xs text-slate-500 mt-1">
+              Asigna la lista de precios correspondiente a cada sucursal y canal.
+            </p>
+          </div>
+
+          <span
+            class="px-2.5 py-1 rounded-full text-[10px] font-bold
+                  bg-blue-50 text-blue-700
+                  dark:bg-blue-950/40 dark:text-blue-300"
+          >
+            KAN-298
+          </span>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead
+              class="bg-slate-50 dark:bg-slate-800
+                    text-slate-500 font-semibold"
+            >
+              <tr>
+                <th class="p-3">Sucursal</th>
+                <th class="p-3">Web</th>
+                <th class="p-3">POS</th>
+                <th class="p-3">B2B</th>
+              </tr>
+            </thead>
+
+            <tbody
+              class="divide-y divide-slate-100
+                    dark:divide-slate-800"
+            >
+              <tr
+                v-for="sucursal in sucursales"
+                :key="sucursal.id"
+              >
+                <td class="p-3">
+                  <div class="font-semibold text-slate-800 dark:text-slate-200">
+                    {{ sucursal.nombre }}
+                  </div>
+                </td>
+
+                <td class="p-3">
+                  <select
+                    v-model="sucursal.precios.web"
+                    class="w-full min-w-[170px] px-2.5 py-2
+                          border border-slate-200 dark:border-slate-700
+                          rounded-lg bg-white dark:bg-slate-800
+                          text-slate-700 dark:text-slate-200
+                          text-xs focus:outline-none focus:ring-2
+                          focus:ring-blue-500"
+                  >
+                    <option
+                      v-for="lista in listasPrecios"
+                      :key="`web-${sucursal.id}-${lista}`"
+                      :value="lista"
+                    >
+                      {{ lista }}
+                    </option>
+                  </select>
+                </td>
+
+                <td class="p-3">
+                  <select
+                    v-model="sucursal.precios.pos"
+                    class="w-full min-w-[170px] px-2.5 py-2
+                          border border-slate-200 dark:border-slate-700
+                          rounded-lg bg-white dark:bg-slate-800
+                          text-slate-700 dark:text-slate-200
+                          text-xs focus:outline-none focus:ring-2
+                          focus:ring-blue-500"
+                  >
+                    <option
+                      v-for="lista in listasPrecios"
+                      :key="`pos-${sucursal.id}-${lista}`"
+                      :value="lista"
+                    >
+                      {{ lista }}
+                    </option>
+                  </select>
+                </td>
+
+                <td class="p-3">
+                  <select
+                    v-model="sucursal.precios.b2b"
+                    class="w-full min-w-[170px] px-2.5 py-2
+                          border border-slate-200 dark:border-slate-700
+                          rounded-lg bg-white dark:bg-slate-800
+                          text-slate-700 dark:text-slate-200
+                          text-xs focus:outline-none focus:ring-2
+                          focus:ring-blue-500"
+                  >
+                    <option
+                      v-for="lista in listasPrecios"
+                      :key="`b2b-${sucursal.id}-${lista}`"
+                      :value="lista"
+                    >
+                      {{ lista }}
+                    </option>
+                  </select>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div
+          class="flex items-center justify-between pt-3
+                border-t border-slate-100 dark:border-slate-800"
+        >
+          <p class="text-[11px] text-slate-400">
+            Los cambios realizados en esta vista representan la asignación
+            actual de cada lista por sucursal y canal.
+          </p>
+
+          <button
+            type="button"
+            class="px-4 py-2 bg-blue-600 hover:bg-blue-700
+                  text-white text-xs font-semibold rounded-lg shadow-sm"
+          >
+            Guardar asignaciones
+          </button>
+        </div>
       </div>
     </div>
   </div>
