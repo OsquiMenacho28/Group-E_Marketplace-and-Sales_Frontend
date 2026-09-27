@@ -1,31 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, onBeforeUnmount } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useCartStore } from '@/stores/cart';
 import { apiClient } from '@/api/client';
-import type { Producto, FacetasCatalogo, SugerenciaItem } from '@/types';
+import type { FacetasCatalogo, SugerenciaItem, MarketplaceProduct } from '@/types';
 import { useWishlistStore } from '@/stores/wishlist';
-import { 
-  Search, 
-  ShoppingBag, 
-  Filter, 
-  CheckCircle2, 
-  Star, 
-  ShieldCheck, 
-  Tag, 
-  Eye, 
-  X, 
-  ChevronLeft, 
-  ChevronRight,
-  ChevronDown,
-  Layers, 
-  Sparkles, 
-  Heart, 
-  RefreshCw, 
-  Clock3,
-  SlidersHorizontal,
-  RotateCcw,
-  Check
-} from 'lucide-vue-next';
+import { Sparkles, ShieldCheck, Search, RotateCcw } from 'lucide-vue-next';
+
+// Subcomponentes modulares
+import MarketplaceSearchBar from '@/components/marketplace/MarketplaceSearchBar.vue';
+import MarketplaceFacetSidebar from '@/components/marketplace/MarketplaceFacetSidebar.vue';
+import ProductCard from '@/components/marketplace/ProductCard.vue';
+import ProductGalleryModal from '@/components/marketplace/ProductGalleryModal.vue';
 
 const cartStore = useCartStore();
 const wishlistStore = useWishlistStore();
@@ -40,7 +25,6 @@ const isSyncingCatalog = ref(false);
 const catalogUpdatedAt = ref('recién sincronizado');
 const showSuggestions = ref(false);
 const suggestions = ref<SugerenciaItem[]>([]);
-const searchContainerRef = ref<HTMLElement | null>(null);
 
 // Filtros facetados
 const selectedCategoryIds = ref<string[]>([]);
@@ -63,22 +47,6 @@ const facets = ref<FacetasCatalogo>({
 
 // Control responsive del panel lateral de filtros en móviles
 const isMobileFiltersOpen = ref(false);
-
-// Estructura interna de producto en Marketplace
-interface MarketplaceProduct {
-  id: string;
-  sku: string;
-  nombre: string;
-  categoria: string;
-  categoria_id?: string;
-  marca?: string;
-  precio: number;
-  rating: number;
-  stock: number;
-  badge: string;
-  image: string;
-  galleryImages: Array<{ id: string; url: string; es_principal: boolean; orden: number }>;
-}
 
 const products = ref<MarketplaceProduct[]>([]);
 const totalCoincidencias = ref(0);
@@ -209,7 +177,6 @@ watch(searchQuery, (newVal) => {
   clearTimeout(debounceTimeout);
   clearTimeout(suggestionsTimeout);
 
-  // Debounce para el autocompletado predictivo (150ms rápido)
   if (newVal.trim().length >= 1) {
     suggestionsTimeout = setTimeout(() => {
       fetchSuggestions(newVal.trim());
@@ -219,27 +186,14 @@ watch(searchQuery, (newVal) => {
     showSuggestions.value = false;
   }
 
-  // Debounce para la búsqueda principal (300ms)
   debounceTimeout = setTimeout(() => {
     debouncedQuery.value = newVal.trim();
     ejecutarBusqueda();
   }, 300);
 });
 
-// Detectar click fuera del buscador para ocultar autocompletado
-function handleClickOutside(event: MouseEvent) {
-  if (searchContainerRef.value && !searchContainerRef.value.contains(event.target as Node)) {
-    showSuggestions.value = false;
-  }
-}
-
 onMounted(() => {
-  document.addEventListener('click', handleClickOutside);
   ejecutarBusqueda();
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener('click', handleClickOutside);
 });
 
 // -----------------------------------------------------------------------------
@@ -253,7 +207,6 @@ async function fetchSuggestions(term: string) {
     suggestions.value = Array.isArray(res.data) ? res.data : [];
     showSuggestions.value = suggestions.value.length > 0;
   } catch (err) {
-    // Fallback local para sugerencias
     const norm = term.toLowerCase();
     suggestions.value = fallbackProducts
       .filter(p => p.nombre.toLowerCase().includes(norm) || p.sku.toLowerCase().includes(norm) || p.categoria.toLowerCase().includes(norm))
@@ -351,7 +304,6 @@ async function ejecutarBusqueda() {
     }
   } catch (err) {
     console.warn('Aviso: backend no disponible, ejecutando motor facetado en memoria local:', err);
-    // Filtrado en memoria si el backend estuviera offline
     aplicarFiltrosLocales();
   } finally {
     isSearching.value = false;
@@ -371,7 +323,6 @@ function aplicarFiltrosLocales() {
     );
   }
 
-  // Recalcular facetas sobre el universo de texto
   const catMap: Record<string, { id: string; etiqueta: string; total: number }> = {};
   const brandMap: Record<string, number> = {};
   let minP = Infinity;
@@ -411,7 +362,6 @@ function aplicarFiltrosLocales() {
     total_general: fallbackProducts.length
   };
 
-  // Filtros acumulativos
   if (selectedCategoryIds.value.length > 0) {
     filtered = filtered.filter(p => p.categoria_id && selectedCategoryIds.value.includes(p.categoria_id));
   }
@@ -428,7 +378,6 @@ function aplicarFiltrosLocales() {
     filtered = filtered.filter(p => p.stock > 0);
   }
 
-  // Ordenamiento
   if (sortBy.value === 'precio_asc') {
     filtered.sort((a, b) => a.precio - b.precio);
   } else if (sortBy.value === 'precio_desc') {
@@ -464,13 +413,7 @@ function toggleMarca(brandName: string) {
   ejecutarBusqueda();
 }
 
-function aplicarRangoPrecio() {
-  appliedPriceMin.value = priceMinInput.value;
-  appliedPriceMax.value = priceMaxInput.value;
-  ejecutarBusqueda();
-}
-
-function aplicarRangoRapido(min: number | null, max: number | null) {
+function aplicarRangoPrecio(min: number | null, max: number | null) {
   priceMinInput.value = min;
   priceMaxInput.value = max;
   appliedPriceMin.value = min;
@@ -507,7 +450,6 @@ const activeFiltersCount = computed(() => {
   return count;
 });
 
-// Resumen del inventario
 const inventorySummary = computed(() => {
   const units = products.value.reduce((total, product) => total + (product.stock || 0), 0);
   return { products: totalCoincidencias.value, units };
@@ -524,19 +466,10 @@ function refreshCatalog() {
 // MODAL DE GALERÍA Y ACCIONES DE CARRITO / DESEOS
 // -----------------------------------------------------------------------------
 const activeGalleryProduct = ref<MarketplaceProduct | null>(null);
-const currentGalleryIndex = ref(0);
 
 function openProductGallery(prod: MarketplaceProduct) {
   activeGalleryProduct.value = prod;
-  currentGalleryIndex.value = 0;
 }
-
-const currentGalleryImage = computed<string | undefined>(() => {
-  if (!activeGalleryProduct.value) return undefined;
-  const imgs = activeGalleryProduct.value.galleryImages;
-  if (imgs.length === 0) return activeGalleryProduct.value.image;
-  return imgs[currentGalleryIndex.value]?.url || activeGalleryProduct.value.image;
-});
 
 function agregarAlCarrito(prod: MarketplaceProduct) {
   cartStore.addItem({
@@ -592,384 +525,56 @@ function alternarDeseo(prod: MarketplaceProduct) {
       </div>
     </section>
 
-    <!-- Barra de Búsqueda Predictiva con Autocompletado (RF-06 / US-06) -->
-    <section class="bg-white/95 dark:bg-slate-900/95 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm backdrop-blur-md">
-      <div class="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
-        
-        <!-- Input de Búsqueda con Dropdown de Typeahead -->
-        <div ref="searchContainerRef" class="relative flex-1 max-w-2xl">
-          <div class="relative">
-            <Search class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-            <input
-              v-model="searchQuery"
-              @focus="showSuggestions = suggestions.length > 0"
-              type="text"
-              placeholder="Buscar por nombre, SKU, marca o descripción (ej: camara, xps15, logitech)..."
-              class="w-full pl-10 pr-10 py-2.5 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-teal-500 focus:border-teal-500 focus:outline-none transition-all placeholder:text-slate-400"
-            />
-            <button
-              v-if="searchQuery"
-              type="button"
-              @click="clearSearch"
-              class="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-md"
-              title="Limpiar búsqueda"
-            >
-              <X class="w-4 h-4" />
-            </button>
-          </div>
-
-          <!-- Menú Flotante de Sugerencias Predictivas (Typeahead) -->
-          <transition
-            enter-active-class="transition duration-150 ease-out"
-            enter-from-class="transform scale-95 opacity-0"
-            enter-to-class="transform scale-100 opacity-100"
-            leave-active-class="transition duration-100 ease-in"
-            leave-from-class="transform scale-100 opacity-100"
-            leave-to-class="transform scale-95 opacity-0"
-          >
-            <div
-              v-if="showSuggestions && suggestions.length > 0"
-              class="absolute left-0 right-0 top-full mt-1.5 z-40 bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden divide-y divide-slate-100 dark:divide-slate-800"
-            >
-              <div class="px-3.5 py-2 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                <span class="flex items-center gap-1.5">
-                  <Sparkles class="w-3 h-3 text-amber-500" /> Coincidencias predictivas
-                </span>
-                <span>{{ suggestions.length }} sugerencias</span>
-              </div>
-              <ul class="max-h-72 overflow-y-auto">
-                <li
-                  v-for="sug in suggestions"
-                  :key="sug.id"
-                  @click="selectSuggestion(sug)"
-                  class="p-2.5 hover:bg-teal-50/70 dark:hover:bg-slate-800 cursor-pointer flex items-center gap-3 transition-colors"
-                >
-                  <img
-                    v-if="sug.imagen_url"
-                    :src="sug.imagen_url"
-                    :alt="sug.nombre"
-                    class="w-10 h-10 object-cover rounded-lg border border-slate-200 dark:border-slate-700 shrink-0"
-                  />
-                  <div class="flex-1 min-w-0">
-                    <p class="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">{{ sug.nombre }}</p>
-                    <div class="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5">
-                      <span class="bg-teal-50 text-teal-700 dark:bg-teal-950 dark:text-teal-300 font-semibold px-1.5 py-0.5 rounded">{{ sug.categoria }}</span>
-                      <span class="font-mono">SKU: {{ sug.sku }}</span>
-                      <span v-if="sug.marca" class="font-medium text-slate-600 dark:text-slate-400">· {{ sug.marca }}</span>
-                    </div>
-                  </div>
-                  <div class="text-right shrink-0">
-                    <span class="text-xs font-black text-teal-700 dark:text-teal-400">
-                      Bs. {{ Number(sug.precio).toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}
-                    </span>
-                  </div>
-                </li>
-              </ul>
-            </div>
-          </transition>
-        </div>
-
-        <!-- Controles de Ordenamiento y Botón de Filtros Móvil -->
-        <div class="flex items-center gap-2.5">
-          <!-- Selector de Ordenamiento -->
-          <div class="flex items-center gap-2">
-            <span class="text-xs text-slate-500 font-medium hidden sm:inline">Ordenar:</span>
-            <select
-              v-model="sortBy"
-              @change="ejecutarBusqueda"
-              class="text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500"
-            >
-              <option value="relevancia">Más relevantes</option>
-              <option value="precio_asc">Precio: Menor a Mayor</option>
-              <option value="precio_desc">Precio: Mayor a Menor</option>
-              <option value="nombre">Nombre A - Z</option>
-            </select>
-          </div>
-
-          <!-- Botón Filtros en Pantallas Chicas -->
-          <button
-            type="button"
-            @click="isMobileFiltersOpen = !isMobileFiltersOpen"
-            class="lg:hidden inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-teal-50 text-teal-700 dark:bg-teal-950 dark:text-teal-300 border border-teal-200 dark:border-teal-800 text-xs font-bold shadow-sm"
-          >
-            <SlidersHorizontal class="w-3.5 h-3.5" />
-            <span>Filtros</span>
-            <span v-if="activeFiltersCount > 0" class="ml-1 px-1.5 py-0.2 rounded-full bg-teal-600 text-white text-[10px]">
-              {{ activeFiltersCount }}
-            </span>
-          </button>
-
-          <!-- Botón de Sincronizar / Refrescar Catálogo -->
-          <button
-            type="button"
-            class="shrink-0 w-9 h-9 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-teal-50 hover:border-teal-300 text-slate-500 hover:text-teal-700 flex items-center justify-center transition-all"
-            :title="isSyncingCatalog ? 'Sincronizando...' : 'Actualizar catálogo'"
-            :disabled="isSyncingCatalog || isSearching"
-            @click="refreshCatalog"
-          >
-            <RefreshCw :class="['w-4 h-4', (isSyncingCatalog || isSearching) ? 'animate-spin text-teal-600' : '']" />
-          </button>
-        </div>
-      </div>
-
-      <!-- Barra de Chips de Filtros Activos -->
-      <div v-if="activeFiltersCount > 0" class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-2">
-        <span class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Filtros aplicados:</span>
-        
-        <!-- Chip de Texto -->
-        <span
-          v-if="debouncedQuery"
-          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-teal-100 dark:bg-teal-950 text-teal-800 dark:text-teal-200 text-xs font-medium"
-        >
-          Texto: "{{ debouncedQuery }}"
-          <button @click="clearSearch" class="hover:text-rose-600"><X class="w-3 h-3" /></button>
-        </span>
-
-        <!-- Chips de Categorías -->
-        <span
-          v-for="cid in selectedCategoryIds"
-          :key="cid"
-          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-200 text-xs font-medium"
-        >
-          {{ facets.categorias.find(c => c.id === cid)?.etiqueta || 'Categoría' }}
-          <button @click="toggleCategoria(cid)" class="hover:text-rose-600"><X class="w-3 h-3" /></button>
-        </span>
-
-        <!-- Chips de Marcas -->
-        <span
-          v-for="brand in selectedBrands"
-          :key="brand"
-          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-200 text-xs font-medium"
-        >
-          {{ brand }}
-          <button @click="toggleMarca(brand)" class="hover:text-rose-600"><X class="w-3 h-3" /></button>
-        </span>
-
-        <!-- Chip de Precio -->
-        <span
-          v-if="appliedPriceMin !== null || appliedPriceMax !== null"
-          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-200 text-xs font-medium"
-        >
-          Bs. {{ appliedPriceMin || 0 }} - {{ appliedPriceMax ? 'Bs. ' + appliedPriceMax : 'Sin límite' }}
-          <button @click="aplicarRangoRapido(null, null)" class="hover:text-rose-600"><X class="w-3 h-3" /></button>
-        </span>
-
-        <!-- Chip de Stock -->
-        <span
-          v-if="onlyInStock"
-          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 text-xs font-medium"
-        >
-          Solo en stock
-          <button @click="toggleStock" class="hover:text-rose-600"><X class="w-3 h-3" /></button>
-        </span>
-
-        <!-- Botón Limpiar Todo -->
-        <button
-          @click="limpiarTodosLosFiltros"
-          class="inline-flex items-center gap-1 text-[11px] font-bold text-rose-600 hover:text-rose-700 ml-auto hover:underline"
-        >
-          <RotateCcw class="w-3 h-3" /> Limpiar todos
-        </button>
-      </div>
-    </section>
+    <!-- Barra de Búsqueda Predictiva con Autocompletado (Subcomponente) -->
+    <MarketplaceSearchBar
+      v-model:search-query="searchQuery"
+      v-model:sort-by="sortBy"
+      v-model:show-suggestions="showSuggestions"
+      :suggestions="suggestions"
+      :is-searching="isSearching"
+      :is-syncing-catalog="isSyncingCatalog"
+      :active-filters-count="activeFiltersCount"
+      :facets="facets"
+      :selected-category-ids="selectedCategoryIds"
+      :selected-brands="selectedBrands"
+      :applied-price-min="appliedPriceMin"
+      :applied-price-max="appliedPriceMax"
+      :only-in-stock="onlyInStock"
+      :debounced-query="debouncedQuery"
+      @select-suggestion="selectSuggestion"
+      @clear-search="clearSearch"
+      @toggle-mobile-filters="isMobileFiltersOpen = !isMobileFiltersOpen"
+      @refresh-catalog="refreshCatalog"
+      @toggle-category="toggleCategoria"
+      @toggle-brand="toggleMarca"
+      @clear-price-range="aplicarRangoPrecio(null, null)"
+      @toggle-stock="toggleStock"
+      @clear-all-filters="limpiarTodosLosFiltros"
+      @sort-change="ejecutarBusqueda"
+    />
 
     <!-- Layout Principal: Barra Lateral de Filtros Facetados + Cuadrícula de Productos -->
     <div class="grid grid-cols-1 lg:grid-cols-[270px_1fr] gap-8 items-start">
       
-      <!-- ===================================================================== -->
-      <!-- BARRA LATERAL DE FILTROS FACETADOS ACUMULATIVOS (RF-06 / US-06)      -->
-      <!-- ===================================================================== -->
-      <aside
-        :class="[
-          'bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 space-y-6 shadow-sm sticky top-6',
-          isMobileFiltersOpen ? 'block fixed inset-x-4 top-20 z-50 max-h-[85vh] overflow-y-auto shadow-2xl border-teal-500' : 'hidden lg:block'
-        ]"
-      >
-        <!-- Encabezado Sidebar Móvil -->
-        <div class="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-          <div class="flex items-center gap-2 text-slate-900 dark:text-white font-extrabold text-sm">
-            <Filter class="w-4 h-4 text-teal-600" />
-            <span>Filtros Facetados</span>
-          </div>
-          <button
-            v-if="isMobileFiltersOpen"
-            @click="isMobileFiltersOpen = false"
-            class="lg:hidden p-1 text-slate-400 hover:text-slate-600"
-          >
-            <X class="w-5 h-5" />
-          </button>
-        </div>
+      <!-- Barra Lateral de Filtros Facetados (Subcomponente) -->
+      <MarketplaceFacetSidebar
+        :facets="facets"
+        :selected-category-ids="selectedCategoryIds"
+        :selected-brands="selectedBrands"
+        :price-min="appliedPriceMin"
+        :price-max="appliedPriceMax"
+        :only-in-stock="onlyInStock"
+        :active-filters-count="activeFiltersCount"
+        :is-mobile-open="isMobileFiltersOpen"
+        @toggle-category="toggleCategoria"
+        @toggle-brand="toggleMarca"
+        @apply-price-range="aplicarRangoPrecio"
+        @toggle-stock="toggleStock"
+        @reset-filters="limpiarTodosLosFiltros"
+        @close-mobile="isMobileFiltersOpen = false"
+      />
 
-        <!-- 1. Faceta: Categorías con recuento dinámico -->
-        <div class="space-y-3">
-          <div class="flex items-center justify-between">
-            <h3 class="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">Categorías</h3>
-            <span class="text-[10px] text-slate-400 font-semibold">{{ facets.categorias.length }}</span>
-          </div>
-          <div class="space-y-1.5 max-h-52 overflow-y-auto pr-1">
-            <label
-              v-for="cat in facets.categorias"
-              :key="cat.id"
-              class="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 hover:text-teal-700 cursor-pointer p-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors"
-            >
-              <div class="flex items-center gap-2.5 truncate">
-                <input
-                  type="checkbox"
-                  :checked="selectedCategoryIds.includes(cat.id)"
-                  @change="toggleCategoria(cat.id)"
-                  class="rounded border-slate-300 text-teal-600 focus:ring-teal-500 w-4 h-4"
-                />
-                <span class="truncate" :title="cat.etiqueta">{{ cat.etiqueta }}</span>
-              </div>
-              <span
-                :class="[
-                  'text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0',
-                  selectedCategoryIds.includes(cat.id)
-                    ? 'bg-teal-600 text-white'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                ]"
-              >
-                {{ cat.total }}
-              </span>
-            </label>
-          </div>
-        </div>
-
-        <!-- 2. Faceta: Marcas con recuento dinámico -->
-        <div class="space-y-3 pt-4 border-t border-slate-100 dark:border-slate-800">
-          <div class="flex items-center justify-between">
-            <h3 class="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">Marcas</h3>
-            <span class="text-[10px] text-slate-400 font-semibold">{{ facets.marcas.length }}</span>
-          </div>
-          <div class="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-            <label
-              v-for="brand in facets.marcas"
-              :key="brand.id"
-              class="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 hover:text-teal-700 cursor-pointer p-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors"
-            >
-              <div class="flex items-center gap-2.5 truncate">
-                <input
-                  type="checkbox"
-                  :checked="selectedBrands.includes(brand.id)"
-                  @change="toggleMarca(brand.id)"
-                  class="rounded border-slate-300 text-teal-600 focus:ring-teal-500 w-4 h-4"
-                />
-                <span class="truncate">{{ brand.etiqueta }}</span>
-              </div>
-              <span
-                :class="[
-                  'text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0',
-                  selectedBrands.includes(brand.id)
-                    ? 'bg-teal-600 text-white'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                ]"
-              >
-                {{ brand.total }}
-              </span>
-            </label>
-          </div>
-        </div>
-
-        <!-- 3. Faceta: Rango de Precios en BOB -->
-        <div class="space-y-3 pt-4 border-t border-slate-100 dark:border-slate-800">
-          <div class="flex items-center justify-between">
-            <h3 class="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">Precio (BOB)</h3>
-            <span class="text-[10px] text-slate-400 font-mono">
-              Bs. {{ facets.precio.min }} - {{ facets.precio.max }}
-            </span>
-          </div>
-
-          <!-- Píldoras de rango rápido -->
-          <div class="grid grid-cols-2 gap-1.5 text-[11px]">
-            <button
-              type="button"
-              @click="aplicarRangoRapido(null, 1000)"
-              class="px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-teal-50 hover:border-teal-300 font-medium"
-            >
-              &lt; Bs. 1.000
-            </button>
-            <button
-              type="button"
-              @click="aplicarRangoRapido(1000, 3000)"
-              class="px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-teal-50 hover:border-teal-300 font-medium"
-            >
-              1.000 - 3.000
-            </button>
-            <button
-              type="button"
-              @click="aplicarRangoRapido(3000, 8000)"
-              class="px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-teal-50 hover:border-teal-300 font-medium"
-            >
-              3.000 - 8.000
-            </button>
-            <button
-              type="button"
-              @click="aplicarRangoRapido(8000, null)"
-              class="px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-teal-50 hover:border-teal-300 font-medium"
-            >
-              &gt; Bs. 8.000
-            </button>
-          </div>
-
-          <!-- Inputs manuales Min y Max -->
-          <div class="flex items-center gap-2 pt-1">
-            <input
-              v-model.number="priceMinInput"
-              type="number"
-              placeholder="Mín"
-              class="w-1/2 px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500"
-            />
-            <span class="text-slate-400 text-xs">-</span>
-            <input
-              v-model.number="priceMaxInput"
-              type="number"
-              placeholder="Máx"
-              class="w-1/2 px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-teal-500"
-            />
-          </div>
-          <button
-            type="button"
-            @click="aplicarRangoPrecio"
-            class="w-full py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-all shadow-sm"
-          >
-            Aplicar Precio
-          </button>
-        </div>
-
-        <!-- 4. Faceta: Disponibilidad y Stock -->
-        <div class="pt-4 border-t border-slate-100 dark:border-slate-800">
-          <label class="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
-            <div class="flex items-center gap-2">
-              <input
-                type="checkbox"
-                :checked="onlyInStock"
-                @change="toggleStock"
-                class="rounded border-slate-300 text-teal-600 focus:ring-teal-500 w-4 h-4"
-              />
-              <span class="font-medium">Solo en stock inmediato</span>
-            </div>
-            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-              {{ facets.en_stock }}
-            </span>
-          </label>
-        </div>
-
-        <!-- Botón Reset Filtros -->
-        <div v-if="activeFiltersCount > 0" class="pt-2">
-          <button
-            type="button"
-            @click="limpiarTodosLosFiltros"
-            class="w-full py-2 border border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
-          >
-            <RotateCcw class="w-3.5 h-3.5" />
-            <span>Restablecer Filtros</span>
-          </button>
-        </div>
-      </aside>
-
-      <!-- ===================================================================== -->
-      <!-- CUADRÍCULA DE PRODUCTOS O ESTADO VACÍO                                -->
-      <!-- ===================================================================== -->
+      <!-- Cuadrícula de Productos o Estado Vacío -->
       <main class="space-y-6">
         
         <!-- Indicador de Resultados y Estado -->
@@ -983,99 +588,17 @@ function alternarDeseo(prod: MarketplaceProduct) {
           </span>
         </div>
 
-        <!-- Grid de Tarjetas de Productos -->
+        <!-- Grid de Tarjetas de Productos (Subcomponente ProductCard) -->
         <section v-if="products.length > 0" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
-          <article
+          <ProductCard
             v-for="prod in products"
             :key="prod.id"
-            class="reveal-up group flex flex-col bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/90 dark:border-slate-800 overflow-hidden shadow-sm hover:-translate-y-1.5 hover:shadow-xl hover:shadow-teal-900/10 transition-all duration-300"
-          >
-            <!-- Imagen de Portada y Galería -->
-            <div class="relative h-56 bg-slate-100 dark:bg-slate-950 overflow-hidden">
-              <img
-                :src="prod.image"
-                :alt="prod.nombre"
-                class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 cursor-pointer"
-                @click="openProductGallery(prod)"
-              />
-              
-              <button
-                type="button"
-                :class="[
-                  'absolute top-2.5 right-2.5 p-2 rounded-full bg-white/90 hover:bg-white shadow-sm backdrop-blur-sm transition-colors z-10',
-                  wishlistStore.estaEnDeseos(prod.id) ? 'text-rose-500' : 'text-slate-500 hover:text-rose-500'
-                ]"
-                :title="wishlistStore.estaEnDeseos(prod.id) ? 'Quitar de lista de deseos' : 'Agregar a lista de deseos'"
-                @click="alternarDeseo(prod)"
-              >
-                <Heart :class="['w-4 h-4', wishlistStore.estaEnDeseos(prod.id) ? 'fill-current' : '']" />
-              </button>
-              
-              <span class="absolute top-2.5 left-2.5 bg-teal-700/90 text-white text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm z-10">
-                {{ prod.badge }}
-              </span>
-
-              <!-- Indicador de Galería si tiene más fotos -->
-              <button
-                v-if="prod.galleryImages && prod.galleryImages.length > 0"
-                @click="openProductGallery(prod)"
-                class="absolute bottom-2.5 left-2.5 bg-black/60 hover:bg-black/80 text-white text-[10px] font-semibold px-2 py-1 rounded-md flex items-center gap-1 backdrop-blur-sm shadow z-10"
-                title="Ver galería completa"
-              >
-                <Layers class="w-3 h-3 text-cyan-400" />
-                <span>{{ prod.galleryImages.length }} fotos</span>
-              </button>
-
-              <div class="absolute bottom-2.5 right-2.5 bg-black/60 text-white text-xs px-2 py-0.5 rounded-md flex items-center gap-1 backdrop-blur-sm z-10">
-                <Star class="w-3 h-3 text-amber-400 fill-amber-400" />
-                <span>{{ prod.rating }}</span>
-              </div>
-            </div>
-
-            <!-- Contenido de la Tarjeta -->
-            <div class="p-4 flex-1 flex flex-col justify-between space-y-3">
-              <div>
-                <div class="flex items-center justify-between gap-2">
-                  <span class="text-[11px] font-bold text-teal-700 dark:text-teal-400 uppercase tracking-wider">
-                    {{ prod.categoria }}
-                  </span>
-                  <span v-if="prod.marca" class="text-[11px] font-semibold text-slate-400">
-                    {{ prod.marca }}
-                  </span>
-                </div>
-                <h3 
-                  @click="openProductGallery(prod)"
-                  class="font-bold text-sm line-clamp-2 text-slate-800 dark:text-slate-100 group-hover:text-teal-700 dark:group-hover:text-teal-400 transition-colors cursor-pointer mt-1"
-                >
-                  {{ prod.nombre }}
-                </h3>
-                <div class="flex items-center justify-between text-[11px] text-slate-400 font-mono mt-1">
-                  <span>SKU: {{ prod.sku }}</span>
-                  <span :class="prod.stock > 0 ? 'text-emerald-600 font-semibold' : 'text-rose-500 font-semibold'">
-                    {{ prod.stock > 0 ? `${prod.stock} disp.` : 'Agotado' }}
-                  </span>
-                </div>
-              </div>
-
-              <!-- Precio y Acción de Compra -->
-              <div class="pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                <div>
-                  <span class="text-[10px] uppercase tracking-wider text-slate-400 block font-semibold">Precio Contado</span>
-                  <span class="text-lg font-black text-slate-900 dark:text-white">
-                    BOB {{ prod.precio.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}
-                  </span>
-                </div>
-                <button
-                  @click="agregarAlCarrito(prod)"
-                  class="p-2.5 bg-teal-700 hover:bg-teal-800 text-white rounded-xl shadow-md active:scale-95 transition-all"
-                  title="Añadir al carrito"
-                  :disabled="prod.stock <= 0"
-                >
-                  <ShoppingBag class="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          </article>
+            :product="prod"
+            :is-in-wishlist="wishlistStore.estaEnDeseos(prod.id)"
+            @open-gallery="openProductGallery"
+            @toggle-wishlist="alternarDeseo"
+            @add-to-cart="agregarAlCarrito"
+          />
         </section>
 
         <!-- Estado Vacío Cuando no hay Coincidencias -->
@@ -1102,86 +625,11 @@ function alternarDeseo(prod: MarketplaceProduct) {
       </main>
     </div>
 
-    <!-- MODAL: Visor de Galería Visual del Producto -->
-    <div
-      v-if="activeGalleryProduct"
-      class="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4"
-      @click.self="activeGalleryProduct = null"
-    >
-      <div class="bg-white dark:bg-slate-900 rounded-2xl max-w-2xl w-full border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        <!-- Header del Modal -->
-        <div class="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-950/50">
-          <div>
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ activeGalleryProduct.nombre }}</h3>
-            <span class="text-xs text-slate-400 font-mono">SKU: {{ activeGalleryProduct.sku }} · {{ activeGalleryProduct.categoria }}</span>
-          </div>
-          <button @click="activeGalleryProduct = null" class="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500">
-            <X class="w-5 h-5" />
-          </button>
-        </div>
-
-        <!-- Imagen Principal Seleccionada -->
-        <div class="relative bg-slate-950 flex items-center justify-center h-80 overflow-hidden">
-          <img
-            :src="currentGalleryImage"
-            :alt="activeGalleryProduct.nombre"
-            class="max-h-full max-w-full object-contain"
-          />
-
-          <!-- Botones de Navegación si hay múltiples imágenes -->
-          <button
-            v-if="activeGalleryProduct.galleryImages.length > 1"
-            @click="currentGalleryIndex = (currentGalleryIndex - 1 + activeGalleryProduct.galleryImages.length) % activeGalleryProduct.galleryImages.length"
-            class="absolute left-3 p-2 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-sm"
-          >
-            <ChevronLeft class="w-5 h-5" />
-          </button>
-          <button
-            v-if="activeGalleryProduct.galleryImages.length > 1"
-            @click="currentGalleryIndex = (currentGalleryIndex + 1) % activeGalleryProduct.galleryImages.length"
-            class="absolute right-3 p-2 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-sm"
-          >
-            <ChevronRight class="w-5 h-5" />
-          </button>
-        </div>
-
-        <!-- Tira de Miniaturas (Thumbnails) -->
-        <div
-          v-if="activeGalleryProduct.galleryImages.length > 0"
-          class="p-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800 flex gap-2 overflow-x-auto"
-        >
-          <button
-            v-for="(img, idx) in activeGalleryProduct.galleryImages"
-            :key="img.id"
-            @click="currentGalleryIndex = idx"
-            :class="[
-              'w-16 h-16 rounded-xl border-2 overflow-hidden shrink-0 transition-all',
-              currentGalleryIndex === idx
-                ? 'border-teal-600 ring-2 ring-teal-500/20 scale-105'
-                : 'border-transparent opacity-70 hover:opacity-100'
-            ]"
-          >
-            <img :src="img.url" class="w-full h-full object-cover" alt="Thumbnail" />
-          </button>
-        </div>
-
-        <!-- Footer con Acción de Compra -->
-        <div class="p-4 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center">
-          <div>
-            <span class="text-xs text-slate-400 block">Precio Oficial</span>
-            <span class="text-xl font-extrabold text-teal-700 dark:text-teal-400">
-              BOB {{ activeGalleryProduct.precio.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}
-            </span>
-          </div>
-          <button
-            @click="agregarAlCarrito(activeGalleryProduct); activeGalleryProduct = null"
-            class="px-5 py-2.5 bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold rounded-xl shadow-md flex items-center gap-2"
-          >
-            <ShoppingBag class="w-4 h-4" />
-            <span>Añadir al Carrito</span>
-          </button>
-        </div>
-      </div>
-    </div>
+    <!-- Visor Modal de Galería (Subcomponente) -->
+    <ProductGalleryModal
+      :product="activeGalleryProduct"
+      @close="activeGalleryProduct = null"
+      @add-to-cart="agregarAlCarrito"
+    />
   </div>
 </template>

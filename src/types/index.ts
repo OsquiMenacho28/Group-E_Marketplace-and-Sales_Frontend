@@ -188,3 +188,18 @@ export interface SugerenciaItem {
   stock: number;
 }
 
+export interface MarketplaceProduct {
+  id: string;
+  sku: string;
+  nombre: string;
+  categoria: string;
+  categoria_id?: string;
+  marca?: string;
+  precio: number;
+  rating: number;
+  stock: number;
+  badge: string;
+  image: string;
+  galleryImages: Array<{ id: string; url: string; es_principal: boolean; orden: number }>;
+}
+
