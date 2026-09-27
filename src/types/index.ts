@@ -46,6 +46,8 @@ export interface Producto {
   categorias?: { id: string; nombre: string };
   imagenes_producto?: ImagenProducto[];
   precio?: number;
+  precio_costo?: number;
+  variante_id?: string;
 }
 
 export interface ItemCarrito {
@@ -80,7 +82,6 @@ export interface UserProfile {
   role: UserRole;
   sucursal_id?: string | null;
   puntos_saldo: number;
-  mensaje?: string;
 }
 
 export interface AuthResponse {
@@ -121,6 +122,69 @@ export interface WishlistItem {
   cliente_id: string;
   variante_id: string;
   created_at: string;
+}
+
+// ============================================================================
+// HISTORIA KAN-346 / KAN-13: DATOS FISCALES Y FACTURACIÓN ELECTRÓNICA
+// ============================================================================
+export type TipoDocumentoFiscal = 'NIT' | 'CI' | 'CEX' | 'PAS';
+
+export interface DatosFiscales {
+  modalidad: 'con_factura' | 'sin_factura';
+  tipo_documento: TipoDocumentoFiscal;
+  nit_ci: string;
+  razon_social: string;
+  email_facturacion?: string;
+  guardar_perfil?: boolean;
+}
+
+export interface PerfilFiscal {
+  id: string;
+  cliente_id?: string;
+  tipo_documento: TipoDocumentoFiscal;
+  nit_ci: string;
+  razon_social: string;
+  email_facturacion?: string;
+  es_predeterminado?: boolean;
+  creado_el?: string;
+}
+
+export interface ValidacionNitResponse {
+  valido: boolean;
+  nit_ci: string;
+  razon_social?: string;
+  estado: 'ACTIVO' | 'INACTIVO' | 'NO_ENCONTRADO';
+  mensaje?: string;
+}
+
+export interface FacturaEmitida {
+  id: string;
+  numero_factura: number;
+  cuf: string;
+  cufd: string;
+  fecha_emision: string;
+  modalidad: 'con_factura' | 'sin_factura';
+  datos_comprador: {
+    tipo_documento: TipoDocumentoFiscal;
+    nit_ci: string;
+    razon_social: string;
+    email_facturacion?: string;
+  };
+  sucursal: string;
+  punto_venta: number;
+  total: number;
+  total_sujeto_iva: number;
+  descuento: number;
+  metodo_pago: string;
+  codigo_qr: string;
+  leyenda_fiscal: string;
+  items: Array<{
+    sku: string;
+    nombre: string;
+    cantidad: number;
+    precio_unitario: number;
+    subtotal: number;
+  }>;
 }
 
 export type CheckoutModalidad = 'domicilio' | 'retiro_sucursal';

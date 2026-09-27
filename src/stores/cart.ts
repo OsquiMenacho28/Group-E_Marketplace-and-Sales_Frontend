@@ -8,7 +8,6 @@ const STORAGE_KEY_RESERVA = 'maxiconecta_checkout_reserva';
 
 export const useCartStore = defineStore('cart', () => {
   const isDrawerOpen = ref(false);
-
   // Inicializar carrito desde localStorage para persistencia (RF-13)
   function loadSavedCart(): ItemCarrito[] {
     try {

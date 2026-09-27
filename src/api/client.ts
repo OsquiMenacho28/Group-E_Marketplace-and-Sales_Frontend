@@ -13,8 +13,14 @@ export const apiClient = axios.create({
   }
 });
 
-// Interceptor para inyectar token JWT si existe en localStorage
+// Interceptor para inyectar token JWT y normalizar URLs
 apiClient.interceptors.request.use((config) => {
+  if (config.url && config.baseURL?.endsWith('/api')) {
+    // Normalizar URLs que ya traen prefijo /api si la baseURL ya incluye /api
+    if (config.url.startsWith('/api/')) {
+      config.url = config.url.replace(/^\/api/, '');
+    }
+  }
   const token = localStorage.getItem('maxiconecta_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import HasRole from '@/components/HasRole.vue';
+import ProductMultimediaManager from '@/components/ProductMultimediaManager.vue';
 import { apiClient } from '@/api/client';
+import type { Producto } from '@/types';
 import { 
   TrendingUp, 
   ShoppingBag, 
@@ -13,13 +15,23 @@ import {
   ArrowUpRight,
   ChevronDown,
   ChevronRight,
+  ChevronLeft,
   Edit3,
   FolderTree,
   ImagePlus,
+  Image as ImageIcon,
   Plus,
   Save,
   Store,
-  X
+  X,
+  Search,
+  Filter,
+  Trash2,
+  RefreshCw,
+  CheckCircle2,
+  SlidersHorizontal,
+  Sparkles,
+  Eye
 } from 'lucide-vue-next';
 
 interface CategoryNode {
@@ -57,6 +69,212 @@ interface PendingImage {
   size: number;
 }
 
+// Control de Pestañas Principales en Admin
+const activeAdminTab = ref<'productos' | 'categorias' | 'kpis'>('productos');
+
+// ============================================================================
+// HISTORIA KAN-17 / RF-01: GESTIÓN DE PRODUCTOS Y CICLO DE VIDA
+// ============================================================================
+const productsList = ref<Producto[]>([]);
+const isLoadingProducts = ref(false);
+const searchProductQuery = ref('');
+const statusFilter = ref<string>('todos');
+const currentPage = ref(1);
+const itemsPerPage = ref(6);
+
+// Modal para KAN-19 / RF-03: Galería Visual y Multimedia
+const selectedMultimediaProduct = ref<Producto | null>(null);
+
+// Modal de Edición de Producto (KAN-307)
+const isEditModalOpen = ref(false);
+const editingProduct = ref<{
+  id: string;
+  sku: string;
+  nombre: string;
+  marca: string;
+  descripcion: string;
+  categoria_id: string;
+  precio: number;
+  precio_costo: number;
+  estado: string;
+} | null>(null);
+const editFormError = ref('');
+const isSavingEdit = ref(false);
+
+// Modal de Confirmación de Eliminación
+const productToDelete = ref<Producto | null>(null);
+const isDeletingProduct = ref(false);
+
+// Feedback Toast/Banner
+const actionFeedback = ref<{ type: 'success' | 'error'; message: string } | null>(null);
+function showFeedback(message: string, type: 'success' | 'error' = 'success') {
+  actionFeedback.value = { type, message };
+  setTimeout(() => {
+    actionFeedback.value = null;
+  }, 4500);
+}
+
+// Cargar listado de productos desde la API (KAN-306 / KAN-291)
+async function loadProductsList() {
+  isLoadingProducts.value = true;
+  try {
+    const res = await apiClient.get('/productos');
+    const data = res.data.productos || res.data || [];
+    productsList.value = Array.isArray(data) ? data : [];
+  } catch (err: any) {
+    console.warn('Fallo cargando /productos, intentando /v1/catalogo/productos:', err);
+    try {
+      const altRes = await apiClient.get('/v1/catalogo/productos');
+      const altData = Array.isArray(altRes.data) ? altRes.data : altRes.data.productos || [];
+      productsList.value = Array.isArray(altData) ? altData : [];
+    } catch {
+      showFeedback('No se pudo cargar la lista de productos del catálogo.', 'error');
+    }
+  } finally {
+    isLoadingProducts.value = false;
+    // Sincronizar selector de matriz de precios con productos reales de la BD
+    if (productsList.value.length > 0) {
+      priceProducts.value = productsList.value.map(p => ({
+        id: p.id,
+        name: p.nombre,
+        sku: p.sku
+      }));
+      if (!priceProducts.value.some(p => p.id === selectedPriceProduct.value)) {
+        selectedPriceProduct.value = priceProducts.value[0]?.id || '';
+      }
+    }
+  }
+}
+
+// Cambio rápido de ciclo de vida (KAN-291: publicado, borrador, inactivo, descontinuado)
+async function quickChangeStatus(prod: Producto, nuevoEstado: string) {
+  try {
+    await apiClient.patch(`/productos/${prod.id}/estado`, { estado: nuevoEstado });
+    prod.estado = nuevoEstado;
+    showFeedback(`El estado de "${prod.nombre}" ahora es "${nuevoEstado.toUpperCase()}".`);
+  } catch (err: any) {
+    showFeedback(err.response?.data?.error || 'Error al cambiar estado del producto.', 'error');
+  }
+}
+
+// Abrir modal de edición reactiva (KAN-307)
+function openEditModalProduct(prod: Producto) {
+  if (catalogCategories.value.length === 0) {
+    loadCatalogCategories();
+  }
+  editingProduct.value = {
+    id: prod.id,
+    sku: prod.sku,
+    nombre: prod.nombre,
+    marca: prod.marca || '',
+    descripcion: prod.descripcion || '',
+    categoria_id: prod.categoria_id || catalogCategories.value[0]?.id || '',
+    precio: prod.precio || 0,
+    precio_costo: (prod as any).precio_costo || Math.round((prod.precio || 0) * 0.7),
+    estado: prod.estado || 'publicado'
+  };
+  editFormError.value = '';
+  isEditModalOpen.value = true;
+}
+
+// Guardar cambios de edición (KAN-306 / KAN-307)
+async function submitEditProduct() {
+  if (!editingProduct.value) return;
+  if (!editingProduct.value.sku.trim() || !editingProduct.value.nombre.trim()) {
+    editFormError.value = 'El SKU y el Nombre son campos obligatorios.';
+    return;
+  }
+  isSavingEdit.value = true;
+  editFormError.value = '';
+  try {
+    const res = await apiClient.put(`/productos/${editingProduct.value.id}`, {
+      sku: editingProduct.value.sku.trim().toUpperCase(),
+      nombre: editingProduct.value.nombre.trim(),
+      marca: editingProduct.value.marca.trim() || null,
+      descripcion: editingProduct.value.descripcion.trim() || null,
+      categoria_id: editingProduct.value.categoria_id || null,
+      precio: Number(editingProduct.value.precio) || 0,
+      precio_costo: Number(editingProduct.value.precio_costo) || 0,
+      estado: editingProduct.value.estado
+    });
+
+    const updated = res.data.producto || res.data;
+    const index = productsList.value.findIndex(p => p.id === editingProduct.value?.id);
+    if (index !== -1) {
+      productsList.value[index] = {
+        ...productsList.value[index],
+        ...updated,
+        precio: Number(editingProduct.value.precio),
+        precio_costo: Number(editingProduct.value.precio_costo)
+      };
+    }
+    isEditModalOpen.value = false;
+    showFeedback('Producto actualizado exitosamente con SKU y validaciones validadas.');
+  } catch (err: any) {
+    editFormError.value = err.response?.data?.error || 'Error al guardar los cambios del producto.';
+  } finally {
+    isSavingEdit.value = false;
+  }
+}
+
+// Eliminar producto con confirmación (KAN-291)
+async function confirmDeleteProduct() {
+  if (!productToDelete.value) return;
+  isDeletingProduct.value = true;
+  try {
+    await apiClient.delete(`/productos/${productToDelete.value.id}`);
+    productsList.value = productsList.value.filter(p => p.id !== productToDelete.value?.id);
+    showFeedback(`Producto "${productToDelete.value.nombre}" eliminado del catálogo.`);
+    productToDelete.value = null;
+  } catch (err: any) {
+    showFeedback(err.response?.data?.error || 'Error al eliminar producto.', 'error');
+  } finally {
+    isDeletingProduct.value = false;
+  }
+}
+
+// Cuando se suben o reordenan fotos en ProductMultimediaManager (KAN-19)
+function handleMultimediaUpdated() {
+  loadProductsList();
+}
+
+// Filtros y Paginación (KAN-291)
+const selectedCategoryFilter = ref('todas');
+
+const filteredProductsList = computed(() => {
+  return productsList.value.filter(prod => {
+    const query = searchProductQuery.value.trim().toLowerCase();
+    const matchesSearch = !query ||
+      prod.nombre.toLowerCase().includes(query) ||
+      prod.sku.toLowerCase().includes(query) ||
+      (prod.marca && prod.marca.toLowerCase().includes(query)) ||
+      (prod.categorias?.nombre && prod.categorias.nombre.toLowerCase().includes(query));
+
+    const matchesStatus = statusFilter.value === 'todos' || prod.estado?.toLowerCase() === statusFilter.value.toLowerCase();
+
+    const matchesCategory = selectedCategoryFilter.value === 'todas' ||
+      prod.categoria_id === selectedCategoryFilter.value ||
+      prod.categorias?.id === selectedCategoryFilter.value;
+
+    return matchesSearch && matchesStatus && matchesCategory;
+  });
+});
+
+const totalPages = computed(() => Math.ceil(filteredProductsList.value.length / itemsPerPage.value) || 1);
+
+const paginatedProducts = computed(() => {
+  const start = (currentPage.value - 1) * itemsPerPage.value;
+  return filteredProductsList.value.slice(start, start + itemsPerPage.value);
+});
+
+const productsStats = computed(() => {
+  const total = productsList.value.length;
+  const publicados = productsList.value.filter(p => p.estado === 'publicado').length;
+  const borradores = productsList.value.filter(p => p.estado === 'borrador').length;
+  const conImagenes = productsList.value.filter(p => (p.imagenes_producto && p.imagenes_producto.length > 0)).length;
+  return { total, publicados, borradores, conImagenes };
+});
+
 const kpis = ref({
   ventasHoy: 15420.50,
   ventasMes: 348920.00,
@@ -72,42 +290,48 @@ const recentOrders = ref([
   { id: 'ORD-2026-079', cliente: 'Sofía Doria Medina', total: 2450.00, canal: 'Web', estado: 'Despachada', fecha: '11/09 18:20' }
 ]);
 
-const lowStockAlerts = ref([
-  { sku: 'MON-LG-27GP', nombre: 'Monitor LG UltraGear 27"', stockActual: 2, puntoReorden: 5 },
-  { sku: 'LAP-DELL-XPS15', nombre: 'Laptop Dell XPS 15', stockActual: 3, puntoReorden: 8 }
-]);
+const lowStockAlerts = computed(() => {
+  if (productsList.value.length === 0) {
+    return [
+      { sku: 'MON-LG-27GP', nombre: 'Monitor LG UltraGear 27"', stockActual: 2, puntoReorden: 5 },
+      { sku: 'LAP-DELL-XPS15', nombre: 'Laptop Dell XPS 15', stockActual: 0, puntoReorden: 8 }
+    ];
+  }
+  return productsList.value
+    .filter(p => p.estado === 'descontinuado' || p.estado === 'borrador')
+    .slice(0, 3)
+    .map(p => ({
+      sku: p.sku,
+      nombre: p.nombre,
+      stockActual: p.estado === 'descontinuado' ? 0 : 3,
+      puntoReorden: 5
+    }));
+});
 
 const categories = ref<CategoryNode[]>([
   {
-    id: 'electronics',
-    name: 'Electrónica',
-    description: 'Tecnología y dispositivos electrónicos.',
-    children: [
-      {
-        id: 'computers',
-        name: 'Computación',
-        description: 'Equipos y accesorios para computación.',
-        children: [
-          { id: 'laptops', name: 'Laptops y PCs', description: 'Computadoras portátiles y de escritorio.' },
-          { id: 'monitors', name: 'Monitores', description: 'Monitores para trabajo, diseño y gaming.' }
-        ]
-      },
-      { id: 'audio-video', name: 'Audio y Video', description: 'Equipos de audio, video y entretenimiento.' }
-    ]
+    id: '0201bb04-acb2-46fe-8aa9-198a4701ab54',
+    name: 'Laptops y PCs',
+    description: 'Equipos portátiles y de escritorio.'
   },
   {
-    id: 'peripherals',
+    id: 'bfeabe38-3626-49e1-9b4e-ace0315cd91d',
     name: 'Periféricos',
-    description: 'Accesorios para mejorar tu estación de trabajo.',
-    children: [
-      { id: 'keyboards-mice', name: 'Teclados y Mouse', description: 'Dispositivos de entrada y controles.' },
-      { id: 'networking', name: 'Redes', description: 'Conectividad, routers y accesorios de red.' }
-    ]
+    description: 'Teclados, mouse y accesorios para estaciones de trabajo.'
   },
-  { id: 'office', name: 'Oficina', description: 'Productos para espacios de trabajo.' }
+  {
+    id: 'd1543851-f4d8-4c72-b952-dcf4a777666a',
+    name: 'Monitores',
+    description: 'Pantallas para gaming, diseño y productividad.'
+  },
+  {
+    id: 'd0998a1f-3b78-4099-928a-b05c70ae472b',
+    name: 'Audio y Video',
+    description: 'Auriculares, micrófonos y cámaras de alta fidelidad.'
+  }
 ]);
 
-const expandedCategoryIds = ref(new Set(['electronics', 'computers', 'peripherals']));
+const expandedCategoryIds = ref(new Set(['0201bb04-acb2-46fe-8aa9-198a4701ab54', 'bfeabe38-3626-49e1-9b4e-ace0315cd91d']));
 const editingCategory = ref<CategoryNode | null>(null);
 const editingName = ref('');
 const editingDescription = ref('');
@@ -125,11 +349,11 @@ const imageInput = ref<HTMLInputElement | null>(null);
 const isSavingProduct = ref(false);
 const productFormMessage = ref('');
 const priceProducts = ref([
-  { id: 'monitor-lg', name: 'Monitor LG UltraGear 27"', sku: 'MON-LG-27GP' },
-  { id: 'laptop-dell', name: 'Laptop Dell XPS 15', sku: 'LAP-DELL-XPS15' },
-  { id: 'keyboard-logi', name: 'Teclado Logitech MX Keys', sku: 'TEC-LOG-MXK' }
+  { id: '7026ea00-797c-43a8-b6e9-58277af347e7', name: 'Monitor Gamer LG UltraGear 27" 165Hz IPS', sku: 'MON-LG-27GP' },
+  { id: 'c121e644-d23a-427d-821e-9c4a8bab7812', name: 'Laptop Dell XPS 15 (OLED 4K, i7 13va Gen)', sku: 'LAP-DELL-XPS15' },
+  { id: 'a03f1380-bf24-4394-acde-6c726a677df3', name: 'Mouse Inalámbrico Logitech MX Master 3S', sku: 'MOU-LOG-MX3S' }
 ]);
-const selectedPriceProduct = ref('monitor-lg');
+const selectedPriceProduct = ref('7026ea00-797c-43a8-b6e9-58277af347e7');
 const priceMatrix = ref<PriceMatrixRow[]>([
   { branch: 'La Paz Centro', web: 3499, pos: 3420, b2b: 3290 },
   { branch: 'Calacoto', web: 3549, pos: 3490, b2b: 3350 },
@@ -237,17 +461,48 @@ function saveCategory() {
   editingCategory.value = null;
 }
 
+// Categorías de respaldo para garantizar disponibilidad inmediata
+const FALLBACK_CATEGORIES: CatalogCategory[] = [
+  { id: '0201bb04-acb2-46fe-8aa9-198a4701ab54', nombre: 'Laptops y PCs', descripcion: 'Equipos portátiles y de escritorio' },
+  { id: 'bfeabe38-3626-49e1-9b4e-ace0315cd91d', nombre: 'Periféricos', descripcion: 'Teclados, mouse y accesorios' },
+  { id: 'd1543851-f4d8-4c72-b952-dcf4a777666a', nombre: 'Monitores', descripcion: 'Pantallas para gaming y productividad' },
+  { id: 'd0998a1f-3b78-4099-928a-b05c70ae472b', nombre: 'Audio y Video', descripcion: 'Auriculares, micrófonos y cámaras' }
+];
+
+async function loadCatalogCategories() {
+  try {
+    const response = await apiClient.get<CatalogCategory[]>('/v1/catalogo/categorias');
+    const cats = Array.isArray(response.data) ? response.data : [];
+    catalogCategories.value = cats.length > 0 ? cats : FALLBACK_CATEGORIES;
+    if (!selectedProductCategory.value && catalogCategories.value.length > 0) {
+      selectedProductCategory.value = catalogCategories.value[0].id;
+    }
+  } catch (err) {
+    console.warn('Aviso cargando categorías de Supabase, usando catálogo base:', err);
+    catalogCategories.value = FALLBACK_CATEGORIES;
+    if (!selectedProductCategory.value && catalogCategories.value.length > 0) {
+      selectedProductCategory.value = catalogCategories.value[0].id;
+    }
+  }
+}
+
 function openProductModal() {
+  if (catalogCategories.value.length === 0) {
+    loadCatalogCategories();
+  }
   isProductModalOpen.value = true;
   productName.value = '';
   productSku.value = '';
   productBrand.value = '';
   productDescription.value = '';
   productPrice.value = null;
-  selectedProductCategory.value = '';
+  selectedProductCategory.value = catalogCategories.value[0]?.id || '0201bb04-acb2-46fe-8aa9-198a4701ab54';
   productAttributeFields.value = [];
   pendingImages.value = [];
   productFormMessage.value = '';
+  if (selectedProductCategory.value) {
+    updateProductCategory(selectedProductCategory.value);
+  }
 }
 
 function updateProductCategory(categoryId: string) {
@@ -288,15 +543,6 @@ async function addProductImages(event: Event) {
 
 function removeProductImage(index: number) {
   pendingImages.value.splice(index, 1);
-}
-
-async function loadCatalogCategories() {
-  try {
-    const response = await apiClient.get<CatalogCategory[]>('/api/v1/catalogo/categorias');
-    catalogCategories.value = response.data;
-  } catch {
-    productFormMessage.value = 'No fue posible cargar las categorías del catálogo.';
-  }
 }
 
 function addCustomAttribute() {
@@ -344,6 +590,8 @@ async function saveProduct() {
     priceProducts.value.unshift({ id: response.data.id, name: response.data.nombre, sku: response.data.sku });
     selectedPriceProduct.value = response.data.id;
     isProductModalOpen.value = false;
+    await loadProductsList();
+    showFeedback(`Producto "${response.data.nombre || productName.value}" creado con éxito.`);
   } catch (error: any) {
     productFormMessage.value = error.response?.data?.detail || 'No se pudo guardar el producto en el catálogo.';
   } finally {
@@ -362,293 +610,669 @@ function savePriceMatrix() {
   });
 }
 
-onMounted(loadCatalogCategories);
+onMounted(() => {
+  loadCatalogCategories();
+  loadProductsList();
+});
 </script>
 
 <template>
-  <div class="space-y-8">
+  <div class="space-y-6">
+    <!-- Banner de Notificación / Feedback en Tiempo Real -->
+    <div
+      v-if="actionFeedback"
+      :class="[
+        'p-3.5 rounded-xl border flex items-center justify-between text-xs font-semibold animate-in fade-in slide-in-from-top-2 shadow-sm',
+        actionFeedback.type === 'success'
+          ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+          : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+      ]"
+    >
+      <div class="flex items-center gap-2.5">
+        <CheckCircle2 v-if="actionFeedback.type === 'success'" class="w-4 h-4 text-emerald-600 shrink-0" />
+        <AlertTriangle v-else class="w-4 h-4 text-rose-600 shrink-0" />
+        <span>{{ actionFeedback.message }}</span>
+      </div>
+      <button @click="actionFeedback = null" class="p-1 rounded-md hover:bg-black/5 dark:hover:bg-white/5">
+        <X class="w-3.5 h-3.5" />
+      </button>
+    </div>
+
     <!-- Header Panel Administrativo -->
     <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
       <div>
-        <h1 class="text-2xl font-extrabold text-slate-900 dark:text-white">Panel de Control y Analítica</h1>
-        <p class="text-xs text-slate-500 mt-1">Supervisión omnicanal de ventas, catálogo y operaciones ERP en tiempo real.</p>
+        <div class="flex items-center gap-2.5">
+          <h1 class="text-2xl font-extrabold text-slate-900 dark:text-white">Panel de Control y Analítica</h1>
+          <span class="px-2 py-0.5 rounded-md bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 text-[10px] font-bold uppercase tracking-wider">
+            Admin ERP
+          </span>
+        </div>
+        <p class="text-xs text-slate-500 mt-1">Supervisión omnicanal de catálogo de productos, galería multimedia, sucursales y ventas en tiempo real.</p>
       </div>
-      <div class="flex gap-2">
-        <button class="px-3.5 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-xs font-semibold rounded-lg">
-          Exportar Reporte
+      <div class="flex items-center gap-2">
+        <button @click="loadProductsList" :disabled="isLoadingProducts" class="p-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5" title="Recargar datos">
+          <RefreshCw :class="['w-3.5 h-3.5', isLoadingProducts ? 'animate-spin' : '']" />
+          <span class="hidden sm:inline">Actualizar</span>
         </button>
         <HasRole :roles="['administrador', 'gerente_comercial']">
-          <button @click="openProductModal" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm">
-            + Nuevo Producto
+          <button @click="openProductModal" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-1.5">
+            <Plus class="w-4 h-4" />
+            <span>Nuevo Producto</span>
           </button>
         </HasRole>
       </div>
     </div>
 
-    <!-- Gestión de Categorías -->
-    <section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-      <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div class="flex items-start gap-3">
-          <span class="p-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400">
-            <FolderTree class="w-5 h-5" />
-          </span>
-          <div>
-            <h2 class="text-sm font-bold text-slate-900 dark:text-white">Árbol de categorías</h2>
-            <p class="text-xs text-slate-500 mt-1">Organiza la jerarquía del catálogo y actualiza sus datos.</p>
-          </div>
-        </div>
-        <span class="text-[11px] font-semibold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 rounded-lg">
-          {{ categories.length }} categorías principales
+    <!-- Selector de Pestañas del Panel de Administración -->
+    <div class="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 overflow-x-auto">
+      <button
+        @click="activeAdminTab = 'productos'"
+        :class="[
+          'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0',
+          activeAdminTab === 'productos'
+            ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+        ]"
+      >
+        <Package class="w-4 h-4" />
+        <span>Gestión de Catálogo & Multimedia (RF-01 / RF-03)</span>
+        <span :class="['px-2 py-0.5 rounded-full text-[10px] font-extrabold', activeAdminTab === 'productos' ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200']">
+          {{ productsList.length }}
         </span>
-      </div>
+      </button>
 
-      <div class="divide-y divide-slate-100 dark:divide-slate-800">
-        <div
-          v-for="category in visibleCategories"
-          :key="category.id"
-          class="min-h-16 px-5 py-3 flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
-          :style="{ paddingLeft: `${1.25 + category.depth * 2}rem` }"
-        >
-          <button
-            v-if="category.hasChildren"
-            type="button"
-            class="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-200"
-            :aria-label="expandedCategoryIds.has(category.id) ? `Contraer ${category.name}` : `Expandir ${category.name}`"
-            @click="toggleCategory(category.id)"
-          >
-            <ChevronDown v-if="expandedCategoryIds.has(category.id)" class="w-4 h-4" />
-            <ChevronRight v-else class="w-4 h-4" />
-          </button>
-          <span v-else class="w-6" aria-hidden="true" />
+      <button
+        @click="activeAdminTab = 'categorias'"
+        :class="[
+          'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0',
+          activeAdminTab === 'categorias'
+            ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+        ]"
+      >
+        <FolderTree class="w-4 h-4" />
+        <span>Categorías & Matriz de Precios</span>
+      </button>
 
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2">
-              <span :class="category.depth === 0 ? 'text-sm font-bold' : 'text-sm font-medium'" class="text-slate-800 dark:text-slate-100">
-                {{ category.name }}
-              </span>
-              <span v-if="category.hasChildren" class="text-[10px] text-slate-400">{{ category.children?.length }} subcategorías</span>
-            </div>
-            <p class="text-xs text-slate-500 truncate mt-0.5">{{ category.description }}</p>
-          </div>
-
-          <HasRole :roles="['administrador', 'gerente_comercial']">
-            <button
-              type="button"
-              class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40"
-              :aria-label="`Editar ${category.name}`"
-              @click="openEditModal(category)"
-            >
-              <Edit3 class="w-3.5 h-3.5" />
-              Editar
-            </button>
-          </HasRole>
-        </div>
-      </div>
-    </section>
-
-    <!-- Matriz de precios por sucursal y canal -->
-    <HasRole :roles="['administrador', 'gerente_comercial']">
-      <section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-        <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div class="flex items-start gap-3">
-            <span class="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400">
-              <DollarSign class="w-5 h-5" />
-            </span>
-            <div>
-              <h2 class="text-sm font-bold text-slate-900 dark:text-white">Matriz de precios</h2>
-              <p class="text-xs text-slate-500 mt-1">Define precios diferenciados por sucursal y canal de venta.</p>
-            </div>
-          </div>
-          <label class="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
-            Producto
-            <select v-model="selectedPriceProduct" class="min-w-56 px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs outline-none focus:border-emerald-500">
-              <option v-for="product in priceProducts" :key="product.id" :value="product.id">{{ product.name }}</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 p-5 border-b border-slate-100 dark:border-slate-800">
-          <div class="px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
-            <span class="block text-[11px] text-slate-500">Precio mínimo</span>
-            <strong class="block text-lg text-slate-900 dark:text-white mt-1">BOB {{ formatPrice(priceSummary.minimum) }}</strong>
-          </div>
-          <div class="px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
-            <span class="block text-[11px] text-slate-500">Precio máximo</span>
-            <strong class="block text-lg text-slate-900 dark:text-white mt-1">BOB {{ formatPrice(priceSummary.maximum) }}</strong>
-          </div>
-          <div class="px-4 py-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/30">
-            <span class="block text-[11px] text-emerald-700 dark:text-emerald-400">Promedio de matriz</span>
-            <strong class="block text-lg text-emerald-800 dark:text-emerald-300 mt-1">BOB {{ formatPrice(priceSummary.average) }}</strong>
-          </div>
-        </div>
-
-        <div class="overflow-x-auto">
-          <table class="w-full min-w-[680px] text-left text-xs">
-            <thead class="bg-slate-50 dark:bg-slate-800 text-slate-500 font-semibold">
-              <tr>
-                <th class="p-4">Sucursal</th>
-                <th class="p-4"><span class="inline-flex items-center gap-1.5"><ShoppingBag class="w-3.5 h-3.5 text-blue-500" /> Web</span></th>
-                <th class="p-4"><span class="inline-flex items-center gap-1.5"><Store class="w-3.5 h-3.5 text-emerald-500" /> POS</span></th>
-                <th class="p-4"><span class="inline-flex items-center gap-1.5"><Users class="w-3.5 h-3.5 text-indigo-500" /> B2B</span></th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-              <tr v-for="row in priceMatrix" :key="row.branch" class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                <th class="p-4 font-semibold text-slate-800 dark:text-slate-200">{{ row.branch }}</th>
-                <td class="p-3">
-                  <label class="sr-only">Precio Web en {{ row.branch }}</label>
-                  <div class="flex items-center gap-1.5">
-                    <span class="text-slate-400">BOB</span>
-                    <input v-model.number="row.web" type="number" min="0" step="0.01" class="w-28 px-2.5 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20" />
-                  </div>
-                </td>
-                <td class="p-3">
-                  <label class="sr-only">Precio POS en {{ row.branch }}</label>
-                  <div class="flex items-center gap-1.5">
-                    <span class="text-slate-400">BOB</span>
-                    <input v-model.number="row.pos" type="number" min="0" step="0.01" class="w-28 px-2.5 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20" />
-                  </div>
-                </td>
-                <td class="p-3">
-                  <label class="sr-only">Precio B2B en {{ row.branch }}</label>
-                  <div class="flex items-center gap-1.5">
-                    <span class="text-slate-400">BOB</span>
-                    <input v-model.number="row.b2b" type="number" min="0" step="0.01" class="w-28 px-2.5 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20" />
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="p-5 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <p class="text-[11px] text-slate-500">
-            {{ priceMatrixSavedAt ? `Matriz guardada a las ${priceMatrixSavedAt}.` : 'Los cambios se aplican al producto seleccionado en esta sesión.' }}
-          </p>
-          <button type="button" class="inline-flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm" @click="savePriceMatrix">
-            <Save class="w-3.5 h-3.5" />
-            Guardar matriz
-          </button>
-        </div>
-      </section>
-    </HasRole>
-
-    <!-- Cards de KPIs Clave (RF-46) -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
-        <div class="flex justify-between items-center text-slate-500">
-          <span class="text-xs font-semibold">Ventas Totales Hoy</span>
-          <span class="p-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 rounded-lg"><DollarSign class="w-4 h-4" /></span>
-        </div>
-        <div class="text-2xl font-bold text-slate-900 dark:text-white">BOB {{ kpis.ventasHoy.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}</div>
-        <span class="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
-          <ArrowUpRight class="w-3.5 h-3.5" /> +14.2% vs ayer
-        </span>
-      </div>
-
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
-        <div class="flex justify-between items-center text-slate-500">
-          <span class="text-xs font-semibold">Ventas del Mes</span>
-          <span class="p-2 bg-blue-50 dark:bg-blue-950/40 text-blue-600 rounded-lg"><TrendingUp class="w-4 h-4" /></span>
-        </div>
-        <div class="text-2xl font-bold text-slate-900 dark:text-white">BOB {{ kpis.ventasMes.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}</div>
-        <span class="text-[11px] text-blue-600 font-semibold flex items-center gap-1">
-          <ArrowUpRight class="w-3.5 h-3.5" /> Meta mensual: 87%
-        </span>
-      </div>
-
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
-        <div class="flex justify-between items-center text-slate-500">
-          <span class="text-xs font-semibold">Órdenes Procesadas Hoy</span>
-          <span class="p-2 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 rounded-lg"><ShoppingBag class="w-4 h-4" /></span>
-        </div>
-        <div class="text-2xl font-bold text-slate-900 dark:text-white">{{ kpis.ordenesHoy }}</div>
-        <span class="text-[11px] text-slate-400">Canal Web (22) / POS (12)</span>
-      </div>
-
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
-        <div class="flex justify-between items-center text-slate-500">
-          <span class="text-xs font-semibold">Ticket Promedio</span>
-          <span class="p-2 bg-purple-50 dark:bg-purple-950/40 text-purple-600 rounded-lg"><Users class="w-4 h-4" /></span>
-        </div>
-        <div class="text-2xl font-bold text-slate-900 dark:text-white">BOB {{ kpis.ticketPromedio.toFixed(2) }}</div>
-        <span class="text-[11px] text-purple-600 font-semibold">Conversión: {{ kpis.tasaConversion }}%</span>
-      </div>
+      <button
+        @click="activeAdminTab = 'kpis'"
+        :class="[
+          'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0',
+          activeAdminTab === 'kpis'
+            ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+        ]"
+      >
+        <TrendingUp class="w-4 h-4" />
+        <span>KPIs & Operaciones ERP</span>
+      </button>
     </div>
 
-    <!-- Grilla de Tablas Operativas -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <!-- Tabla de Órdenes Recientes -->
-      <div class="lg:col-span-2 bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-        <div class="flex justify-between items-center">
-          <h3 class="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
-            <FileText class="w-4 h-4 text-blue-500" /> Órdenes y Ventas Recientes (RF-27 al RF-37)
-          </h3>
-          <router-link to="/admin" class="text-xs text-blue-600 hover:underline font-semibold">Ver todas</router-link>
+    <!-- ===================================================================== -->
+    <!-- PESTAÑA 1: GESTIÓN DE PRODUCTOS Y MULTIMEDIA (RF-01 / RF-03)          -->
+    <!-- ===================================================================== -->
+    <div v-if="activeAdminTab === 'productos'" class="space-y-6">
+      <!-- Tarjetas de Resumen Rápido de Catálogo -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+        <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="block text-[11px] font-semibold text-slate-500">Total en Catálogo</span>
+          <strong class="block text-2xl font-black text-slate-900 dark:text-white mt-1">{{ productsStats.total }}</strong>
+          <span class="text-[10px] text-slate-400">SKUs registrados</span>
+        </div>
+        <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="block text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">Publicados (Web/POS)</span>
+          <strong class="block text-2xl font-black text-emerald-700 dark:text-emerald-300 mt-1">{{ productsStats.publicados }}</strong>
+          <span class="text-[10px] text-slate-400">Visibles para venta</span>
+        </div>
+        <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="block text-[11px] font-semibold text-amber-600 dark:text-amber-400">En Borrador / Revisión</span>
+          <strong class="block text-2xl font-black text-amber-700 dark:text-amber-300 mt-1">{{ productsStats.borradores }}</strong>
+          <span class="text-[10px] text-slate-400">Edición en progreso</span>
+        </div>
+        <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <span class="block text-[11px] font-semibold text-blue-600 dark:text-blue-400">Con Galería Multimedia</span>
+          <strong class="block text-2xl font-black text-blue-700 dark:text-blue-300 mt-1">{{ productsStats.conImagenes }}</strong>
+          <span class="text-[10px] text-slate-400">Fotos en Supabase Storage</span>
+        </div>
+      </div>
+
+      <!-- Barra de Filtros, Búsqueda y Paginación (KAN-291) -->
+      <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <!-- Buscador -->
+        <div class="relative flex-1 max-w-md">
+          <Search class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            v-model="searchProductQuery"
+            type="text"
+            placeholder="Buscar producto por SKU, nombre o marca..."
+            class="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          />
         </div>
 
-        <div class="overflow-x-auto">
-          <table class="w-full text-left text-xs">
-            <thead class="bg-slate-50 dark:bg-slate-800 text-slate-500 font-semibold">
+        <div class="flex items-center gap-3 flex-wrap">
+          <!-- Filtro por Categoría (KAN-291) -->
+          <div class="flex items-center gap-1.5">
+            <span class="text-xs text-slate-400 font-semibold flex items-center gap-1">
+              <Layers class="w-3.5 h-3.5" /> Categoría:
+            </span>
+            <select
+              v-model="selectedCategoryFilter"
+              @change="currentPage = 1"
+              class="px-2.5 py-1 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500"
+            >
+              <option value="todas">Todas las categorías</option>
+              <option v-for="cat in catalogCategories" :key="cat.id" :value="cat.id">{{ cat.nombre }}</option>
+            </select>
+          </div>
+
+          <!-- Filtros por Estado del Ciclo de Vida (KAN-291) -->
+          <div class="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0">
+            <span class="text-xs text-slate-400 font-semibold mr-1 flex items-center gap-1">
+              <Filter class="w-3.5 h-3.5" /> Estado:
+            </span>
+            <button
+              v-for="st in ['todos', 'publicado', 'borrador', 'inactivo', 'descontinuado']"
+              :key="st"
+              @click="statusFilter = st; currentPage = 1"
+              :class="[
+                'px-2.5 py-1 rounded-lg text-xs font-semibold capitalize transition-colors',
+                statusFilter === st
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+              ]"
+            >
+              {{ st }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabla de Ciclo de Vida de Productos (KAN-291) -->
+      <section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+        <div class="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h2 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Package class="w-4 h-4 text-blue-600" />
+              Catálogo de Productos y Estado de Ciclo de Vida (RF-01)
+            </h2>
+            <p class="text-xs text-slate-500 mt-0.5">Control de SKU único, precios base, galería multimedia y estados de publicación.</p>
+          </div>
+          <span class="text-[11px] font-semibold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg self-start sm:self-auto">
+            Mostrando {{ paginatedProducts.length }} de {{ filteredProductsList.length }} productos
+          </span>
+        </div>
+
+        <div v-if="isLoadingProducts" class="p-12 text-center text-xs text-slate-500 flex flex-col items-center justify-center gap-3">
+          <RefreshCw class="w-6 h-6 animate-spin text-blue-600" />
+          <span>Cargando catálogo de productos y recursos multimedia...</span>
+        </div>
+
+        <div v-else-if="filteredProductsList.length === 0" class="p-12 text-center space-y-3">
+          <Package class="w-10 h-10 text-slate-300 dark:text-slate-700 mx-auto" />
+          <p class="text-sm font-bold text-slate-700 dark:text-slate-300">No se encontraron productos</p>
+          <p class="text-xs text-slate-400">Intenta con otro término de búsqueda o crea un nuevo producto en el catálogo.</p>
+          <button @click="openProductModal" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold shadow-sm">
+            + Crear Primer Producto
+          </button>
+        </div>
+
+        <div v-else class="overflow-x-auto">
+          <table class="w-full min-w-[800px] text-left text-xs">
+            <thead class="bg-slate-50 dark:bg-slate-800/80 text-slate-500 font-semibold border-b border-slate-200 dark:border-slate-800">
               <tr>
-                <th class="p-2.5">Código</th>
-                <th class="p-2.5">Cliente</th>
-                <th class="p-2.5">Canal</th>
-                <th class="p-2.5">Total</th>
-                <th class="p-2.5">Estado</th>
-                <th class="p-2.5">Fecha</th>
+                <th class="p-3.5">Portada & Multimedia</th>
+                <th class="p-3.5">Producto / SKU</th>
+                <th class="p-3.5">Categoría</th>
+                <th class="p-3.5">Precio Web</th>
+                <th class="p-3.5">Ciclo de Vida (Estado)</th>
+                <th class="p-3.5 text-right">Acciones Rápidas</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-              <tr v-for="ord in recentOrders" :key="ord.id">
-                <td class="p-2.5 font-mono font-bold text-blue-600">{{ ord.id }}</td>
-                <td class="p-2.5 text-slate-800 dark:text-slate-200 font-medium">{{ ord.cliente }}</td>
-                <td class="p-2.5">
-                  <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 dark:bg-slate-800 uppercase">{{ ord.canal }}</span>
+              <tr v-for="prod in paginatedProducts" :key="prod.id" class="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                <!-- Portada y Multimedia (KAN-19 / KAN-78) -->
+                <td class="p-3.5">
+                  <div class="flex items-center gap-3">
+                    <div
+                      class="relative w-12 h-12 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden bg-slate-100 dark:bg-slate-800 shrink-0 cursor-pointer group shadow-sm"
+                      @click="selectedMultimediaProduct = prod"
+                      title="Abrir gestor multimedia"
+                    >
+                      <img
+                        v-if="prod.imagenes_producto && prod.imagenes_producto.length > 0"
+                        :src="(prod.imagenes_producto.find(i => i.es_principal) || prod.imagenes_producto[0]).url"
+                        :alt="prod.nombre"
+                        class="w-full h-full object-cover group-hover:scale-110 transition-transform"
+                      />
+                      <div v-else class="w-full h-full flex items-center justify-center text-slate-400">
+                        <ImageIcon class="w-5 h-5" />
+                      </div>
+                      <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                        <Eye class="w-4 h-4" />
+                      </div>
+                    </div>
+                    <div>
+                      <button
+                        @click="selectedMultimediaProduct = prod"
+                        class="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+                      >
+                        <ImageIcon class="w-3.5 h-3.5" />
+                        <span>{{ (prod.imagenes_producto && prod.imagenes_producto.length) || 0 }} foto(s)</span>
+                      </button>
+                      <span v-if="prod.imagenes_producto && prod.imagenes_producto.some(i => i.es_principal)" class="text-[9px] text-emerald-600 font-bold block">
+                        ★ Con Portada
+                      </span>
+                    </div>
+                  </div>
                 </td>
-                <td class="p-2.5 font-bold">BOB {{ ord.total.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}</td>
-                <td class="p-2.5">
-                  <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
-                    {{ ord.estado }}
+
+                <!-- Nombre y SKU con unicidad KAN-287 -->
+                <td class="p-3.5">
+                  <p class="font-bold text-slate-900 dark:text-white line-clamp-1">{{ prod.nombre }}</p>
+                  <div class="flex items-center gap-2 mt-0.5">
+                    <span class="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                      {{ prod.sku }}
+                    </span>
+                    <span v-if="prod.marca" class="text-[10px] text-slate-400">{{ prod.marca }}</span>
+                  </div>
+                </td>
+
+                <!-- Categoría -->
+                <td class="p-3.5">
+                  <span class="px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                    {{ prod.categorias?.nombre || 'General' }}
                   </span>
                 </td>
-                <td class="p-2.5 text-slate-400">{{ ord.fecha }}</td>
+
+                <!-- Precio -->
+                <td class="p-3.5">
+                  <span class="font-bold text-slate-900 dark:text-white block">
+                    BOB {{ formatPrice(prod.precio || 0) }}
+                  </span>
+                  <span v-if="(prod as any).precio_costo" class="text-[10px] text-slate-400 block">
+                    Costo: BOB {{ formatPrice((prod as any).precio_costo) }}
+                  </span>
+                </td>
+
+                <!-- Ciclo de Vida: Selector rápido (KAN-291) -->
+                <td class="p-3.5">
+                  <div class="flex items-center gap-1.5">
+                    <select
+                      :value="prod.estado || 'publicado'"
+                      @change="quickChangeStatus(prod, ($event.target as HTMLSelectElement).value)"
+                      :class="[
+                        'px-2.5 py-1 rounded-lg text-xs font-bold outline-none border transition-colors cursor-pointer',
+                        prod.estado === 'publicado'
+                          ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                          : prod.estado === 'borrador'
+                          ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                          : prod.estado === 'inactivo'
+                          ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
+                          : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                      ]"
+                    >
+                      <option value="publicado">Publicado</option>
+                      <option value="borrador">Borrador</option>
+                      <option value="inactivo">Inactivo</option>
+                      <option value="descontinuado">Descontinuado</option>
+                    </select>
+                  </div>
+                </td>
+
+                <!-- Acciones Rápidas (KAN-291, KAN-19) -->
+                <td class="p-3.5 text-right">
+                  <div class="inline-flex items-center gap-1.5">
+                    <!-- Botón Gestor Multimedia (KAN-19) -->
+                    <button
+                      type="button"
+                      @click="selectedMultimediaProduct = prod"
+                      class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 hover:bg-blue-100 transition-colors flex items-center gap-1"
+                      title="Administrar galería multimedia (Subir, ordenar y portada)"
+                    >
+                      <ImageIcon class="w-3.5 h-3.5" />
+                      <span class="hidden md:inline">Multimedia</span>
+                    </button>
+
+                    <!-- Botón Editar Producto (KAN-307) -->
+                    <button
+                      type="button"
+                      @click="openEditModalProduct(prod)"
+                      class="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      title="Editar datos del producto"
+                    >
+                      <Edit3 class="w-4 h-4" />
+                    </button>
+
+                    <!-- Botón Eliminar Producto (KAN-291) -->
+                    <button
+                      type="button"
+                      @click="productToDelete = prod"
+                      class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                      title="Eliminar producto"
+                    >
+                      <Trash2 class="w-4 h-4" />
+                    </button>
+                  </div>
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
+
+        <!-- Paginador Interactivo (KAN-291) -->
+        <div v-if="totalPages > 1" class="p-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
+          <p class="text-xs text-slate-500">
+            Página <strong class="text-slate-800 dark:text-slate-200">{{ currentPage }}</strong> de <strong class="text-slate-800 dark:text-slate-200">{{ totalPages }}</strong>
+          </p>
+          <div class="flex items-center gap-1.5">
+            <button
+              :disabled="currentPage === 1"
+              @click="currentPage--"
+              class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center gap-1"
+            >
+              <ChevronLeft class="w-3.5 h-3.5" /> Anterior
+            </button>
+            <div class="flex items-center gap-1">
+              <button
+                v-for="p in totalPages"
+                :key="p"
+                @click="currentPage = p"
+                :class="[
+                  'w-7 h-7 rounded-lg text-xs font-bold flex items-center justify-center transition-colors',
+                  currentPage === p
+                    ? 'bg-blue-600 text-white'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                ]"
+              >
+                {{ p }}
+              </button>
+            </div>
+            <button
+              :disabled="currentPage === totalPages"
+              @click="currentPage++"
+              class="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center gap-1"
+            >
+              Siguiente <ChevronRight class="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PESTAÑA 2: CATEGORÍAS & MATRIZ DE PRECIOS                             -->
+    <!-- ===================================================================== -->
+    <div v-show="activeAdminTab === 'categorias'" class="space-y-6">
+      <!-- Gestión de Categorías -->
+      <section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+        <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div class="flex items-start gap-3">
+            <span class="p-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400">
+              <FolderTree class="w-5 h-5" />
+            </span>
+            <div>
+              <h2 class="text-sm font-bold text-slate-900 dark:text-white">Árbol de categorías</h2>
+              <p class="text-xs text-slate-500 mt-1">Organiza la jerarquía del catálogo y actualiza sus datos.</p>
+            </div>
+          </div>
+          <span class="text-[11px] font-semibold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 rounded-lg">
+            {{ categories.length }} categorías principales
+          </span>
+        </div>
+
+        <div class="divide-y divide-slate-100 dark:divide-slate-800">
+          <div
+            v-for="category in visibleCategories"
+            :key="category.id"
+            class="min-h-16 px-5 py-3 flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+            :style="{ paddingLeft: `${1.25 + category.depth * 2}rem` }"
+          >
+            <button
+              v-if="category.hasChildren"
+              type="button"
+              class="w-6 h-6 flex items-center justify-center rounded-md text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-700 dark:hover:text-slate-200"
+              :aria-label="expandedCategoryIds.has(category.id) ? `Contraer ${category.name}` : `Expandir ${category.name}`"
+              @click="toggleCategory(category.id)"
+            >
+              <ChevronDown v-if="expandedCategoryIds.has(category.id)" class="w-4 h-4" />
+              <ChevronRight v-else class="w-4 h-4" />
+            </button>
+            <span v-else class="w-6" aria-hidden="true" />
+
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span :class="category.depth === 0 ? 'text-sm font-bold' : 'text-sm font-medium'" class="text-slate-800 dark:text-slate-100">
+                  {{ category.name }}
+                </span>
+                <span v-if="category.hasChildren" class="text-[10px] text-slate-400">{{ category.children?.length }} subcategorías</span>
+              </div>
+              <p class="text-xs text-slate-500 truncate mt-0.5">{{ category.description }}</p>
+            </div>
+
+            <HasRole :roles="['administrador', 'gerente_comercial']">
+              <button
+                type="button"
+                class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40"
+                :aria-label="`Editar ${category.name}`"
+                @click="openEditModal(category)"
+              >
+                <Edit3 class="w-3.5 h-3.5" />
+                Editar
+              </button>
+            </HasRole>
+          </div>
+        </div>
+      </section>
+
+      <!-- Matriz de precios por sucursal y canal -->
+      <HasRole :roles="['administrador', 'gerente_comercial']">
+        <section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+          <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div class="flex items-start gap-3">
+              <span class="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400">
+                <DollarSign class="w-5 h-5" />
+              </span>
+              <div>
+                <h2 class="text-sm font-bold text-slate-900 dark:text-white">Matriz de precios</h2>
+                <p class="text-xs text-slate-500 mt-1">Define precios diferenciados por sucursal y canal de venta.</p>
+              </div>
+            </div>
+            <label class="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
+              Producto
+              <select v-model="selectedPriceProduct" class="min-w-56 px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs outline-none focus:border-emerald-500">
+                <option v-for="product in priceProducts" :key="product.id" :value="product.id">{{ product.name }}</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 p-5 border-b border-slate-100 dark:border-slate-800">
+            <div class="px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
+              <span class="block text-[11px] text-slate-500">Precio mínimo</span>
+              <strong class="block text-lg text-slate-900 dark:text-white mt-1">BOB {{ formatPrice(priceSummary.minimum) }}</strong>
+            </div>
+            <div class="px-4 py-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
+              <span class="block text-[11px] text-slate-500">Precio máximo</span>
+              <strong class="block text-lg text-slate-900 dark:text-white mt-1">BOB {{ formatPrice(priceSummary.maximum) }}</strong>
+            </div>
+            <div class="px-4 py-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/30">
+              <span class="block text-[11px] text-emerald-700 dark:text-emerald-400">Promedio de matriz</span>
+              <strong class="block text-lg text-emerald-800 dark:text-emerald-300 mt-1">BOB {{ formatPrice(priceSummary.average) }}</strong>
+            </div>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full min-w-[680px] text-left text-xs">
+              <thead class="bg-slate-50 dark:bg-slate-800 text-slate-500 font-semibold">
+                <tr>
+                  <th class="p-4">Sucursal</th>
+                  <th class="p-4"><span class="inline-flex items-center gap-1.5"><ShoppingBag class="w-3.5 h-3.5 text-blue-500" /> Web</span></th>
+                  <th class="p-4"><span class="inline-flex items-center gap-1.5"><Store class="w-3.5 h-3.5 text-emerald-500" /> POS</span></th>
+                  <th class="p-4"><span class="inline-flex items-center gap-1.5"><Users class="w-3.5 h-3.5 text-indigo-500" /> B2B</span></th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                <tr v-for="row in priceMatrix" :key="row.branch" class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                  <th class="p-4 font-semibold text-slate-800 dark:text-slate-200">{{ row.branch }}</th>
+                  <td class="p-3">
+                    <label class="sr-only">Precio Web en {{ row.branch }}</label>
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-slate-400">BOB</span>
+                      <input v-model.number="row.web" type="number" min="0" step="0.01" class="w-28 px-2.5 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20" />
+                    </div>
+                  </td>
+                  <td class="p-3">
+                    <label class="sr-only">Precio POS en {{ row.branch }}</label>
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-slate-400">BOB</span>
+                      <input v-model.number="row.pos" type="number" min="0" step="0.01" class="w-28 px-2.5 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20" />
+                    </div>
+                  </td>
+                  <td class="p-3">
+                    <label class="sr-only">Precio B2B en {{ row.branch }}</label>
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-slate-400">BOB</span>
+                      <input v-model.number="row.b2b" type="number" min="0" step="0.01" class="w-28 px-2.5 py-2 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg font-semibold text-slate-800 dark:text-slate-100 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20" />
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="p-5 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <p class="text-[11px] text-slate-500">
+              {{ priceMatrixSavedAt ? `Matriz guardada a las ${priceMatrixSavedAt}.` : 'Los cambios se aplican al producto seleccionado en esta sesión.' }}
+            </p>
+            <button type="button" class="inline-flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm" @click="savePriceMatrix">
+              <Save class="w-3.5 h-3.5" />
+              Guardar matriz
+            </button>
+          </div>
+        </section>
+      </HasRole>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PESTAÑA 3: KPIS & OPERACIONES ERP                                     -->
+    <!-- ===================================================================== -->
+    <div v-show="activeAdminTab === 'kpis'" class="space-y-6">
+      <!-- Cards de KPIs Clave (RF-46) -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+          <div class="flex justify-between items-center text-slate-500">
+            <span class="text-xs font-semibold">Ventas Totales Hoy</span>
+            <span class="p-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 rounded-lg"><DollarSign class="w-4 h-4" /></span>
+          </div>
+          <div class="text-2xl font-bold text-slate-900 dark:text-white">BOB {{ kpis.ventasHoy.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}</div>
+          <span class="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+            <ArrowUpRight class="w-3.5 h-3.5" /> +14.2% vs ayer
+          </span>
+        </div>
+
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+          <div class="flex justify-between items-center text-slate-500">
+            <span class="text-xs font-semibold">Ventas del Mes</span>
+            <span class="p-2 bg-blue-50 dark:bg-blue-950/40 text-blue-600 rounded-lg"><TrendingUp class="w-4 h-4" /></span>
+          </div>
+          <div class="text-2xl font-bold text-slate-900 dark:text-white">BOB {{ kpis.ventasMes.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}</div>
+          <span class="text-[11px] text-blue-600 font-semibold flex items-center gap-1">
+            <ArrowUpRight class="w-3.5 h-3.5" /> Meta mensual: 87%
+          </span>
+        </div>
+
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+          <div class="flex justify-between items-center text-slate-500">
+            <span class="text-xs font-semibold">Órdenes Procesadas Hoy</span>
+            <span class="p-2 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 rounded-lg"><ShoppingBag class="w-4 h-4" /></span>
+          </div>
+          <div class="text-2xl font-bold text-slate-900 dark:text-white">{{ kpis.ordenesHoy }}</div>
+          <span class="text-[11px] text-slate-400">Canal Web (22) / POS (12)</span>
+        </div>
+
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+          <div class="flex justify-between items-center text-slate-500">
+            <span class="text-xs font-semibold">Ticket Promedio</span>
+            <span class="p-2 bg-purple-50 dark:bg-purple-950/40 text-purple-600 rounded-lg"><Users class="w-4 h-4" /></span>
+          </div>
+          <div class="text-2xl font-bold text-slate-900 dark:text-white">BOB {{ kpis.ticketPromedio.toFixed(2) }}</div>
+          <span class="text-[11px] text-purple-600 font-semibold">Conversión: {{ kpis.tasaConversion }}%</span>
+        </div>
       </div>
 
-      <!-- Alertas de Stock y Quiebre (RF-42) -->
-      <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-        <div class="flex items-center gap-2 text-rose-600 font-bold text-sm">
-          <AlertTriangle class="w-4 h-4" />
-          <span>Alertas de Quiebre de Stock (RF-42)</span>
-        </div>
-        <p class="text-xs text-slate-400">Productos que alcanzaron el punto de reorden para Compras:</p>
+      <!-- Grilla de Tablas Operativas -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Tabla de Órdenes Recientes -->
+        <div class="lg:col-span-2 bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+          <div class="flex justify-between items-center">
+            <h3 class="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+              <FileText class="w-4 h-4 text-blue-500" /> Órdenes y Ventas Recientes (RF-27 al RF-37)
+            </h3>
+            <router-link to="/admin" class="text-xs text-blue-600 hover:underline font-semibold">Ver todas</router-link>
+          </div>
 
-        <div class="space-y-3">
-          <div
-            v-for="alert in lowStockAlerts"
-            :key="alert.sku"
-            class="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 rounded-lg space-y-1"
-          >
-            <div class="flex justify-between items-start">
-              <span class="text-xs font-bold text-slate-800 dark:text-slate-200">{{ alert.nombre }}</span>
-              <span class="text-[10px] font-mono px-1.5 py-0.5 bg-rose-200 dark:bg-rose-900 text-rose-800 dark:text-rose-200 rounded font-bold">
-                Quedan {{ alert.stockActual }}
-              </span>
-            </div>
-            <div class="text-[11px] text-slate-500 flex justify-between">
-              <span>SKU: {{ alert.sku }}</span>
-              <span>Reorden: {{ alert.puntoReorden }}</span>
-            </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-50 dark:bg-slate-800 text-slate-500 font-semibold">
+                <tr>
+                  <th class="p-2.5">Código</th>
+                  <th class="p-2.5">Cliente</th>
+                  <th class="p-2.5">Canal</th>
+                  <th class="p-2.5">Total</th>
+                  <th class="p-2.5">Estado</th>
+                  <th class="p-2.5">Fecha</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                <tr v-for="ord in recentOrders" :key="ord.id">
+                  <td class="p-2.5 font-mono font-bold text-blue-600">{{ ord.id }}</td>
+                  <td class="p-2.5 text-slate-800 dark:text-slate-200 font-medium">{{ ord.cliente }}</td>
+                  <td class="p-2.5">
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 dark:bg-slate-800 uppercase">{{ ord.canal }}</span>
+                  </td>
+                  <td class="p-2.5 font-bold">BOB {{ ord.total.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}</td>
+                  <td class="p-2.5">
+                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                      {{ ord.estado }}
+                    </span>
+                  </td>
+                  <td class="p-2.5 text-slate-400">{{ ord.fecha }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
-        <button class="w-full py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg mt-2">
-          Disparar Solicitud a Compras (ERP)
-        </button>
+        <!-- Alertas de Stock y Quiebre (RF-42) -->
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+          <div class="flex items-center gap-2 text-rose-600 font-bold text-sm">
+            <AlertTriangle class="w-4 h-4" />
+            <span>Alertas de Quiebre de Stock (RF-42)</span>
+          </div>
+          <p class="text-xs text-slate-400">Productos que alcanzaron el punto de reorden para Compras:</p>
+
+          <div class="space-y-3">
+            <div
+              v-for="alert in lowStockAlerts"
+              :key="alert.sku"
+              class="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 rounded-lg space-y-1"
+            >
+              <div class="flex justify-between items-start">
+                <span class="text-xs font-bold text-slate-800 dark:text-slate-200">{{ alert.nombre }}</span>
+                <span class="text-[10px] font-mono px-1.5 py-0.5 bg-rose-200 dark:bg-rose-900 text-rose-800 dark:text-rose-200 rounded font-bold">
+                  Quedan {{ alert.stockActual }}
+                </span>
+              </div>
+              <div class="text-[11px] text-slate-500 flex justify-between">
+                <span>SKU: {{ alert.sku }}</span>
+                <span>Reorden: {{ alert.puntoReorden }}</span>
+              </div>
+            </div>
+          </div>
+
+          <button class="w-full py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg mt-2">
+            Disparar Solicitud a Compras (ERP)
+          </button>
+        </div>
       </div>
     </div>
 
@@ -845,6 +1469,146 @@ onMounted(loadCatalogCategories);
           </div>
           <p v-if="productFormMessage" class="text-xs font-medium text-rose-600">{{ productFormMessage }}</p>
         </form>
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- MODAL DE GESTIÓN MULTIMEDIA (KAN-19 / RF-03)                         -->
+    <!-- Subtareas: KAN-75, KAN-76, KAN-77, KAN-78                           -->
+    <!-- =================================================================== -->
+    <div
+      v-if="selectedMultimediaProduct"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-3 sm:p-6 overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+      @click.self="selectedMultimediaProduct = null"
+    >
+      <div class="w-full max-w-4xl max-h-[92vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-2 sm:p-4">
+        <ProductMultimediaManager
+          :producto="selectedMultimediaProduct"
+          @close="selectedMultimediaProduct = null"
+          @updated="handleMultimediaUpdated"
+        />
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- MODAL FORMULARIO REACTIVO DE EDICIÓN DE PRODUCTO (KAN-307 / RF-01)  -->
+    <!-- =================================================================== -->
+    <div
+      v-if="isEditModalOpen && editingProduct"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4 overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+      @click.self="isEditModalOpen = false"
+    >
+      <div class="w-full max-w-xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-5">
+        <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
+          <div>
+            <h3 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Edit3 class="w-4 h-4 text-blue-600" />
+              Editar Producto (RF-01 / KAN-307)
+            </h3>
+            <p class="text-xs text-slate-500 mt-0.5">Actualiza las características, precio y estado del ciclo de vida.</p>
+          </div>
+          <button @click="isEditModalOpen = false" class="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <form @submit.prevent="submitEditProduct" class="space-y-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">SKU *</label>
+              <input v-model="editingProduct.sku" type="text" required class="w-full px-3 py-2 text-xs font-mono uppercase bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Nombre *</label>
+              <input v-model="editingProduct.nombre" type="text" required class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Marca</label>
+              <input v-model="editingProduct.marca" type="text" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Precio Web (BOB) *</label>
+              <input v-model.number="editingProduct.precio" type="number" min="0" step="0.01" required class="w-full px-3 py-2 text-xs font-bold bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Precio Costo (BOB)</label>
+              <input v-model.number="editingProduct.precio_costo" type="number" min="0" step="0.01" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500" />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Categoría</label>
+              <select v-model="editingProduct.categoria_id" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500">
+                <option value="">Sin categoría asignada</option>
+                <option v-for="cat in catalogCategories" :key="cat.id" :value="cat.id">{{ cat.nombre }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Estado de Ciclo de Vida</label>
+              <select v-model="editingProduct.estado" class="w-full px-3 py-2 text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500">
+                <option value="publicado">Publicado (Visible en tienda)</option>
+                <option value="borrador">Borrador (Oculto)</option>
+                <option value="inactivo">Inactivo (Pausado)</option>
+                <option value="descontinuado">Descontinuado (Sin reposición)</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descripción</label>
+            <textarea v-model="editingProduct.descripcion" rows="3" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 resize-none"></textarea>
+          </div>
+
+          <div v-if="editFormError" class="p-2.5 rounded-lg bg-rose-50 text-rose-600 border border-rose-200 text-xs font-medium">
+            {{ editFormError }}
+          </div>
+
+          <div class="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <button type="button" @click="isEditModalOpen = false" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">Cancelar</button>
+            <button type="submit" :disabled="isSavingEdit" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm disabled:opacity-60">
+              <Save class="w-3.5 h-3.5" />
+              {{ isSavingEdit ? 'Guardando...' : 'Guardar Cambios' }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- =================================================================== -->
+    <!-- MODAL DE CONFIRMACIÓN DE ELIMINACIÓN DE PRODUCTO (KAN-291)          -->
+    <!-- =================================================================== -->
+    <div
+      v-if="productToDelete"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div class="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-4">
+        <div class="w-12 h-12 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
+          <Trash2 class="w-6 h-6" />
+        </div>
+        <div class="text-center space-y-1">
+          <h3 class="text-base font-bold text-slate-900 dark:text-white">¿Eliminar este producto?</h3>
+          <p class="text-xs text-slate-500">
+            Se eliminará el producto <strong class="text-slate-800 dark:text-slate-200">"{{ productToDelete.nombre }}"</strong> (SKU: {{ productToDelete.sku }}) junto con todos sus recursos multimedia asociados en Supabase Storage.
+          </p>
+        </div>
+        <div class="flex justify-center gap-3 pt-2">
+          <button @click="productToDelete = null" class="px-4 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">
+            Cancelar
+          </button>
+          <button @click="confirmDeleteProduct" :disabled="isDeletingProduct" class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-sm disabled:opacity-60">
+            {{ isDeletingProduct ? 'Eliminando...' : 'Sí, eliminar producto' }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
