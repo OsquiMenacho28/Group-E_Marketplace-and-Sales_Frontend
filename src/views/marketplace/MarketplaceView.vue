@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue';
 import { useCartStore } from '@/stores/cart';
 import { Search, ShoppingBag, Filter, CheckCircle2, Star, ShieldCheck, Tag } from 'lucide-vue-next';
+import StockBadge from '@/components/StockBadge.vue';
 
 const cartStore = useCartStore();
 
@@ -158,6 +159,10 @@ function agregarAlCarrito(prod: any) {
               {{ prod.nombre }}
             </h3>
             <p class="text-[11px] text-slate-400 font-mono mt-0.5">SKU: {{ prod.sku }}</p>
+            <!-- RF-07: Badge reactivo de disponibilidad (RIO-INV-01 + caché Redis 30s) -->
+            <div class="mt-1.5">
+              <StockBadge :sku="prod.sku" />
+            </div>
           </div>
 
           <div class="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
