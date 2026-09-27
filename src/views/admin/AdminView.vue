@@ -68,6 +68,39 @@ const listasPrecios = [
   'Lista B2B Corporativa',
   'Lista Promocional'
 ];
+
+const tipoCambioUsd = 6.96;
+
+const preciosDual = ref([
+  {
+    id: 'precio-001',
+    producto: 'Monitor LG UltraGear 27"',
+    lista: 'Lista Web Retail',
+    precioBob: 8999.00
+  },
+  {
+    id: 'precio-002',
+    producto: 'Laptop Dell XPS 15',
+    lista: 'Lista Web Retail',
+    precioBob: 12500.00
+  },
+  {
+    id: 'precio-003',
+    producto: 'Laptop Dell XPS 15',
+    lista: 'Lista B2B Corporativa',
+    precioBob: 11200.00
+  },
+  {
+    id: 'precio-004',
+    producto: 'Monitor LG UltraGear 27"',
+    lista: 'Lista POS Retail',
+    precioBob: 8799.00
+  }
+]);
+
+function convertirAUsd(precioBob: number) {
+  return precioBob / tipoCambioUsd;
+}
 </script>
 
 <template>
@@ -340,6 +373,152 @@ const listasPrecios = [
             Guardar asignaciones
           </button>
         </div>
+      </div>
+
+            <!-- Visualización de precios dual BOB / USD (KAN-299) -->
+      <div
+        class="bg-white dark:bg-slate-900 p-5 rounded-xl
+              border border-slate-200 dark:border-slate-800
+              shadow-sm space-y-4"
+      >
+        <div class="flex flex-col sm:flex-row justify-between
+                    items-start sm:items-center gap-3">
+
+          <div>
+            <h3
+              class="text-sm font-bold text-slate-800
+                    dark:text-white flex items-center gap-2"
+            >
+              <DollarSign class="w-4 h-4 text-emerald-500" />
+
+              Visualización de precios
+            </h3>
+
+            <p class="text-xs text-slate-500 mt-1">
+              Consulta los precios en moneda nacional y su equivalente en dólares.
+            </p>
+          </div>
+
+          <span
+            class="px-2.5 py-1 rounded-full text-[10px]
+                  font-bold bg-emerald-50 text-emerald-700
+                  dark:bg-emerald-950/40 dark:text-emerald-300"
+          >
+            BOB / USD
+          </span>
+        </div>
+
+        <!-- Tipo de cambio -->
+        <div
+          class="flex items-center justify-between
+                px-4 py-3 rounded-lg
+                bg-slate-50 dark:bg-slate-800
+                border border-slate-100 dark:border-slate-700"
+        >
+          <span class="text-xs text-slate-500">
+            Tipo de cambio referencial
+          </span>
+
+          <span class="text-sm font-bold text-slate-800 dark:text-white">
+            1 USD = {{ tipoCambioUsd.toFixed(2) }} BOB
+          </span>
+        </div>
+
+        <!-- Lista de precios -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+          <div
+            v-for="precio in preciosDual"
+            :key="precio.id"
+            class="p-4 rounded-xl
+                  border border-slate-200
+                  dark:border-slate-700
+                  hover:shadow-sm transition"
+          >
+            <div class="flex justify-between items-start gap-3">
+
+              <div>
+                <p
+                  class="text-sm font-bold
+                        text-slate-800 dark:text-white"
+                >
+                  {{ precio.producto }}
+                </p>
+
+                <p class="text-[11px] text-slate-400 mt-1">
+                  {{ precio.lista }}
+                </p>
+              </div>
+
+              <span
+                class="text-[10px] font-semibold
+                      px-2 py-1 rounded-full
+                      bg-blue-50 text-blue-700
+                      dark:bg-blue-950/40
+                      dark:text-blue-300"
+              >
+                Precio
+              </span>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3 mt-4">
+
+              <!-- BOB -->
+              <div
+                class="p-3 rounded-lg
+                      bg-slate-50 dark:bg-slate-800"
+              >
+                <p class="text-[10px] uppercase
+                          text-slate-400 font-semibold">
+                  Bolivianos
+                </p>
+
+                <p
+                  class="text-lg font-extrabold
+                        text-slate-900 dark:text-white mt-1"
+                >
+                  BOB
+                  {{ precio.precioBob.toLocaleString('es-BO', {
+                    minimumFractionDigits: 2
+                  }) }}
+                </p>
+              </div>
+
+              <!-- USD -->
+              <div
+                class="p-3 rounded-lg
+                      bg-emerald-50
+                      dark:bg-emerald-950/30"
+              >
+                <p class="text-[10px] uppercase
+                          text-emerald-600
+                          dark:text-emerald-400
+                          font-semibold">
+                  Dólares
+                </p>
+
+                <p
+                  class="text-lg font-extrabold
+                        text-emerald-700
+                        dark:text-emerald-300 mt-1"
+                >
+                  USD
+                  {{ convertirAUsd(precio.precioBob).toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                  }) }}
+                </p>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+
+        <p class="text-[10px] text-slate-400">
+          El equivalente USD se calcula a partir del precio BOB utilizando
+          el tipo de cambio referencial mostrado arriba.
+        </p>
       </div>
     </div>
   </div>
