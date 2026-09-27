@@ -1,13 +1,26 @@
+import { computed, ref, watch } from 'vue';
 import { defineStore } from 'pinia';
-import { ref, computed, watch } from 'vue';
 import type { ItemCarrito, ReservaStockResponse, ReservaStockStatus, CheckoutPayload } from '@/types';
 import { apiClient } from '@/api/client';
 
 const STORAGE_KEY_ITEMS = 'maxiconecta_cart_items';
 const STORAGE_KEY_RESERVA = 'maxiconecta_checkout_reserva';
 
+function cartSessionId() {
+  const key = 'maxiconecta_cart_session';
+  const existing = localStorage.getItem(key);
+  if (existing) return existing;
+  const sessionId = `guest-${crypto.randomUUID()}`;
+  localStorage.setItem(key, sessionId);
+  return sessionId;
+}
+
 export const useCartStore = defineStore('cart', () => {
+  const sessionId = ref(cartSessionId());
   const isDrawerOpen = ref(false);
+  const isLoading = ref(false);
+  const error = ref('');
+
   // Inicializar carrito desde localStorage para persistencia (RF-13)
   function loadSavedCart(): ItemCarrito[] {
     try {
@@ -32,7 +45,6 @@ export const useCartStore = defineStore('cart', () => {
     },
     { deep: true }
   );
-
   const cupon = ref<string | null>(null);
 
   // Estados de Reserva de Stock Temporal (RF-14 · RIO-INV-02)
@@ -80,6 +92,14 @@ export const useCartStore = defineStore('cart', () => {
   // Indicadores de urgencia de tiempo
   const isUrgentTimer = computed(() => reservaSecondsLeft.value <= 120 && reservaStatus.value === 'activa');
   const isWarningTimer = computed(() => reservaSecondsLeft.value > 120 && reservaSecondsLeft.value <= 300 && reservaStatus.value === 'activa');
+
+  function openDrawer() {
+    isDrawerOpen.value = true;
+  }
+
+  function closeDrawer() {
+    isDrawerOpen.value = false;
+  }
 
   function toggleDrawer() {
     isDrawerOpen.value = !isDrawerOpen.value;
@@ -130,6 +150,10 @@ export const useCartStore = defineStore('cart', () => {
       return { ok: true, mensaje: 'Cupón VIP20 aplicado: 20% de descuento.' };
     }
     return { ok: false, mensaje: 'Código de cupón no válido o vencido.' };
+  }
+
+  function loadCart() {
+    // Sincronizado localmente desde localStorage
   }
 
   function removerCupon() {
@@ -373,13 +397,19 @@ export const useCartStore = defineStore('cart', () => {
   recuperarReservaActiva();
 
   return {
+    sessionId,
     isDrawerOpen,
+    isLoading,
+    error,
     items,
     cupon,
     descuento,
     itemCount,
     subtotal,
     total,
+    loadCart,
+    openDrawer,
+    closeDrawer,
     toggleDrawer,
     addItem,
     removeItem,
