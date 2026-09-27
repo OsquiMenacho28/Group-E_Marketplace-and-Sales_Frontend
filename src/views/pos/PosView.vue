@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { 
   Scan, 
   Trash2, 
@@ -24,6 +24,9 @@ interface PosItem {
 
 const skuInput = ref('');
 const cajaAbierta = ref(true);
+const cajaId = ref<string | null>(null);
+const sucursalId = crypto.randomUUID();
+const cajeroId = crypto.randomUUID();
 const sucursalNombre = ref('Sucursal Central - La Paz');
 const cajeroNombre = ref('Cajero: Oscar Menacho (Turno Mañana)');
 
@@ -32,7 +35,12 @@ const cartItems = ref<PosItem[]>([
   { id: '2', sku: 'MOU-LOG-MX3S', nombre: 'Mouse Logitech MX Master 3S', precio: 799.00, cantidad: 2 }
 ]);
 
-const suspendedSales = ref<{ id: string; ticket: string; total: number; items: PosItem[] }[]>([]);
+const suspendedSales = ref<{
+  id: string;
+  cliente_referencia: string;
+  items: any[];
+  subtotal: number;
+}[]>([]);
 
 const subtotal = computed(() => cartItems.value.reduce((acc, curr) => acc + (curr.precio * curr.cantidad), 0));
 const total = computed(() => subtotal.value);
@@ -43,6 +51,24 @@ const payMethod = ref<'efectivo' | 'tarjeta' | 'qr'>('efectivo');
 const cashGiven = ref<number>(11000);
 const changeDue = computed(() => Math.max(0, (cashGiven.value || 0) - total.value));
 const isReceiptReady = ref(false);
+
+async function abrirCaja() {
+  try {
+    const response = await apiClient.post('/api/v1/pos/caja/abrir', {
+      sucursal_id: sucursalId,
+      cajero_id: cajeroId,
+      fondo_inicial: 0
+    });
+
+    cajaId.value = response.data.id;
+    cajaAbierta.value = true;
+
+    console.log('Caja abierta:', cajaId.value);
+  } catch (error) {
+    console.error('Error al abrir la caja:', error);
+    cajaAbierta.value = false;
+  }
+}
 
 function addItemByBarcode() {
   if (!skuInput.value.trim()) return;
@@ -78,23 +104,33 @@ async function suspenderVenta() {
   };
 
   try {
-    await apiClient.post(
-      '/api/v1/pos/ventas/suspender',
-      venta
-    );
-
-    cartItems.value = [];
-
-    await cargarVentasSuspendidas();
-  } catch (error) {
-    console.error('Error al suspender la venta:', error);
+  if (!cajaId.value) {
+    console.error('No hay caja abierta');
+    return;
   }
+
+  await apiClient.post(
+    `/api/v1/pos/ventas/${cajaId.value}/suspender`,
+    venta
+  );
+
+  cartItems.value = [];
+
+  await cargarVentasSuspendidas();
+  } catch (error) {
+  console.error('Error al suspender la venta:', error);
+}
 }
 
 async function cargarVentasSuspendidas() {
   try {
+    if (!cajaId.value) {
+      console.error('No hay caja abierta');
+      return;
+    }
+
     const response = await apiClient.get(
-      '/api/v1/pos/ventas/suspendidas'
+      `/api/v1/pos/ventas/${cajaId.value}/suspendidas`
     );
 
     suspendedSales.value = response.data;
@@ -112,8 +148,13 @@ async function reanudarVenta(index: number) {
   if (!sale) return;
 
   try {
+    if (!cajaId.value) {
+      console.error('No hay caja abierta');
+      return;
+    }
+
     const response = await apiClient.delete(
-      `/api/v1/pos/ventas/suspendidas/${sale.id}`
+      `/api/v1/pos/ventas/${cajaId.value}/suspendidas/${sale.id}`
     );
 
     cartItems.value = response.data.items.map((item: any) => ({
@@ -142,6 +183,11 @@ function resetPos() {
   isPayModalOpen.value = false;
   isReceiptReady.value = false;
 }
+
+onMounted(() => {
+  abrirCaja();
+});
+
 </script>
 
 <template>
@@ -236,7 +282,7 @@ function resetPos() {
               @click="reanudarVenta(idx)"
               class="text-xs bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1 rounded font-medium flex items-center gap-1 shadow-sm"
             >
-              <PlayCircle class="w-3.5 h-3.5" /> {{ s.ticket }} (BOB {{ s.total.toFixed(2) }})
+              <PlayCircle class="w-3.5 h-3.5" /> Ticket #{{ s.id }} (BOB {{ Number(s.subtotal).toFixed(2) }}))
             </button>
           </div>
         </div>
