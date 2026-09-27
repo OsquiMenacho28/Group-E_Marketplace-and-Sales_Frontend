@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { 
   Scan, 
   Trash2, 
@@ -10,8 +10,13 @@ import {
   QrCode, 
   Printer, 
   CheckCircle, 
-  Store 
+  Store,
+  Wifi,
+  WifiOff,
+  RefreshCw,
 } from 'lucide-vue-next';
+import { usePosSyncStore } from '@/stores/posSync';
+import QuickStockModal from '@/components/QuickStockModal.vue';
 
 interface PosItem {
   id: string;
@@ -25,6 +30,26 @@ const skuInput = ref('');
 const cajaAbierta = ref(true);
 const sucursalNombre = ref('Sucursal Central - La Paz');
 const cajeroNombre = ref('Cajero: Oscar Menacho (Turno Mañana)');
+
+// RF-08 [FE]: sincronización en segundo plano del catálogo (hidratación local + SSE)
+const posSync = usePosSyncStore();
+onMounted(() => {
+  posSync.iniciar();
+  window.addEventListener('keydown', onKeydownGlobal);
+});
+onUnmounted(() => {
+  posSync.detenerEscuchaEnTiempoReal();
+  window.removeEventListener('keydown', onKeydownGlobal);
+});
+
+// Consulta Rápida de Stock Multi-Sucursal (atajo global F3)
+const isQuickStockOpen = ref(false);
+function onKeydownGlobal(e: KeyboardEvent) {
+  if (e.key === 'F3') {
+    e.preventDefault();
+    isQuickStockOpen.value = true;
+  }
+}
 
 const cartItems = ref<PosItem[]>([
   { id: '1', sku: 'LAP-DELL-XPS15', nombre: 'Laptop Dell XPS 15', precio: 8999.00, cantidad: 1 },
@@ -46,11 +71,16 @@ const isReceiptReady = ref(false);
 function addItemByBarcode() {
   if (!skuInput.value.trim()) return;
   const sku = skuInput.value.trim().toUpperCase();
+
+  // RF-08: resuelve el producto contra la caché local sincronizada del POS
+  // (hidratada por posSync); si el SKU aún no fue sincronizado, cae al
+  // comportamiento anterior como placeholder para no bloquear la venta.
+  const productoLocal = posSync.buscarPorSku(sku);
   cartItems.value.push({
     id: Date.now().toString(),
     sku: sku,
-    nombre: `Artículo Escaneado [${sku}]`,
-    precio: 150.00,
+    nombre: productoLocal ? productoLocal.nombre : `Artículo Escaneado [${sku}]`,
+    precio: productoLocal ? productoLocal.precio_referencia : 150.00,
     cantidad: 1
   });
   skuInput.value = '';
@@ -99,14 +129,38 @@ function resetPos() {
         </div>
       </div>
       <div class="flex items-center gap-3">
+        <!-- RF-08: Indicador de sincronización de catálogo en tiempo real -->
+        <span
+          class="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border"
+          :class="posSync.conectado
+            ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+            : 'bg-slate-700/40 text-slate-400 border-slate-600/40'"
+          :title="posSync.ultimoEvento ?? 'Catálogo local sincronizado'"
+        >
+          <RefreshCw v-if="posSync.sincronizando" class="w-3 h-3 animate-spin" />
+          <Wifi v-else-if="posSync.conectado" class="w-3 h-3" />
+          <WifiOff v-else class="w-3 h-3" />
+          {{ posSync.sincronizando ? 'Sincronizando…' : posSync.conectado ? 'Catálogo en línea' : 'Catálogo local' }}
+          ({{ posSync.totalProductosSincronizados }})
+        </span>
         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
           <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Caja Abierta
         </span>
+        <button
+          @click="isQuickStockOpen = true"
+          class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 font-medium"
+          title="Consulta rápida de stock por sucursal [F3]"
+        >
+          Consulta Stock [F3]
+        </button>
         <button class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 font-medium">
           Arqueo / Cierre
         </button>
       </div>
     </div>
+
+    <!-- Consulta Rápida de Stock Multi-Sucursal (atajo global F3) -->
+    <QuickStockModal :open="isQuickStockOpen" @close="isQuickStockOpen = false" />
 
     <!-- Contenido Principal POS -->
     <div class="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-6 overflow-hidden">
