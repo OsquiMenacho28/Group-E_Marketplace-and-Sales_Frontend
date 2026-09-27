@@ -1,22 +1,40 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { ItemCarrito, ReservaStockResponse, ReservaStockStatus, CheckoutPayload } from '@/types';
 import { apiClient } from '@/api/client';
 
+const STORAGE_KEY_ITEMS = 'maxiconecta_cart_items';
+const STORAGE_KEY_RESERVA = 'maxiconecta_checkout_reserva';
+
 export const useCartStore = defineStore('cart', () => {
   const isDrawerOpen = ref(false);
-  const items = ref<ItemCarrito[]>([
-    {
-      variante_id: 'b0000000-0000-0000-0000-000000000001',
-      sku: 'LAP-DELL-XPS15-16GB',
-      nombre: 'Laptop Dell XPS 15 (16GB RAM / 512GB SSD)',
-      cantidad: 1,
-      precio_unitario: 8999.00,
-      total_linea: 8999.00
+
+  // Inicializar carrito desde localStorage para persistencia (RF-13)
+  function loadSavedCart(): ItemCarrito[] {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_ITEMS);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
     }
-  ]);
+  }
+
+  const items = ref<ItemCarrito[]>(loadSavedCart());
+
+  // Sincronizar cambios del carrito con localStorage
+  watch(
+    items,
+    (newItems) => {
+      try {
+        localStorage.setItem(STORAGE_KEY_ITEMS, JSON.stringify(newItems));
+      } catch (e) {
+        console.warn('Error guardando carrito en localStorage:', e);
+      }
+    },
+    { deep: true }
+  );
+
   const cupon = ref<string | null>(null);
-  const descuento = ref(0);
 
   // Estados de Reserva de Stock Temporal (RF-14 · RIO-INV-02)
   const isCheckoutModalOpen = ref(false);
@@ -33,6 +51,17 @@ export const useCartStore = defineStore('cart', () => {
 
   const itemCount = computed(() => items.value.reduce((acc, curr) => acc + curr.cantidad, 0));
   const subtotal = computed(() => items.value.reduce((acc, curr) => acc + curr.total_linea, 0));
+
+  // Descuento reactivo según el cupón activo (RF-17)
+  const descuento = computed(() => {
+    if (!cupon.value) return 0;
+    const clean = cupon.value.toUpperCase();
+    if (clean === 'MAXI10') return subtotal.value * 0.10;
+    if (clean === 'BIENVENIDO') return subtotal.value * 0.15;
+    if (clean === 'VIP20') return subtotal.value * 0.20;
+    return 0;
+  });
+
   const total = computed(() => Math.max(0, subtotal.value - descuento.value));
 
   // Formato visual MM:SS para el contador regresivo
@@ -87,18 +116,51 @@ export const useCartStore = defineStore('cart', () => {
     }
   }
 
-  function aplicarCupon(codigo: string) {
-    if (codigo.toUpperCase() === 'MAXI10') {
+  function aplicarCupon(codigo: string): { ok: boolean; mensaje: string } {
+    const clean = codigo.trim().toUpperCase();
+    if (clean === 'MAXI10') {
       cupon.value = 'MAXI10';
-      descuento.value = subtotal.value * 0.10;
-      return true;
+      return { ok: true, mensaje: 'Cupón MAXI10 aplicado: 10% de descuento.' };
     }
-    return false;
+    if (clean === 'BIENVENIDO') {
+      cupon.value = 'BIENVENIDO';
+      return { ok: true, mensaje: 'Cupón BIENVENIDO aplicado: 15% de descuento.' };
+    }
+    if (clean === 'VIP20') {
+      cupon.value = 'VIP20';
+      return { ok: true, mensaje: 'Cupón VIP20 aplicado: 20% de descuento.' };
+    }
+    return { ok: false, mensaje: 'Código de cupón no válido o vencido.' };
+  }
+
+  function removerCupon() {
+    cupon.value = null;
   }
 
   // ---------------------------------------------------------------------------
-  // Lógica de Reserva Temporal de Stock (RF-14 · RIO-INV-02)
+  // Lógica de Reserva Temporal de Stock y Persistencia F5 (RF-14 · RIO-INV-02)
   // ---------------------------------------------------------------------------
+
+  function guardarSesionReserva(id: string, ttl: number, data: ReservaStockResponse) {
+    try {
+      sessionStorage.setItem(STORAGE_KEY_RESERVA, JSON.stringify({
+        reservaId: id,
+        expiraEnTimestamp: Date.now() + (ttl * 1000),
+        totalSeconds: ttl,
+        lastData: data
+      }));
+    } catch (e) {
+      console.warn('Error guardando sesión de checkout en sessionStorage:', e);
+    }
+  }
+
+  function limpiarSesionReserva() {
+    try {
+      sessionStorage.removeItem(STORAGE_KEY_RESERVA);
+    } catch {
+      // ignore
+    }
+  }
 
   function iniciarTemporizador(segundos: number) {
     detenerTemporizador();
@@ -111,6 +173,7 @@ export const useCartStore = defineStore('cart', () => {
       } else {
         detenerTemporizador();
         reservaStatus.value = 'expirada';
+        limpiarSesionReserva();
       }
     }, 1000);
   }
@@ -122,6 +185,49 @@ export const useCartStore = defineStore('cart', () => {
     }
   }
 
+  async function recuperarReservaActiva() {
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY_RESERVA);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      const now = Date.now();
+      const secondsLeft = Math.floor((saved.expiraEnTimestamp - now) / 1000);
+
+      if (secondsLeft > 0 && items.value.length > 0) {
+        reservaId.value = saved.reservaId;
+        reservaTotalSeconds.value = saved.totalSeconds || 900;
+        reservaSecondsLeft.value = secondsLeft;
+        reservaStatus.value = 'activa';
+        lastReservaData.value = saved.lastData || null;
+        iniciarTemporizador(secondsLeft);
+        isCheckoutModalOpen.value = true;
+
+        // Opcionalmente validar con el backend para sincronizar segundos exactos de Redis
+        try {
+          const res = await apiClient.get<{ reserva_id: string; segundos_restantes: number; estado: string }>(
+            `/api/v1/carrito/checkout/reserva/${saved.reservaId}`
+          );
+          if (res.data && res.data.estado === 'ACTIVA') {
+            const ttlServer = res.data.segundos_restantes;
+            if (ttlServer > 0) {
+              iniciarTemporizador(ttlServer);
+            }
+          } else {
+            detenerTemporizador();
+            reservaStatus.value = 'expirada';
+            limpiarSesionReserva();
+          }
+        } catch {
+          // Si el backend no responde, se mantiene el tiempo calculado localmente
+        }
+      } else {
+        limpiarSesionReserva();
+      }
+    } catch {
+      limpiarSesionReserva();
+    }
+  }
+
   async function iniciarCheckoutConReserva(clienteId: string = 'cliente-anonimo') {
     if (items.value.length === 0) return;
 
@@ -130,7 +236,6 @@ export const useCartStore = defineStore('cart', () => {
     reservaStatus.value = 'reservando';
 
     try {
-      // Intentar reservar en el backend mediante el API Gateway / Carrito
       const response = await apiClient.post<ReservaStockResponse>(
         `/api/v1/carrito/${clienteId}/checkout/iniciar`,
         {
@@ -147,32 +252,32 @@ export const useCartStore = defineStore('cart', () => {
       
       const ttl = data.ttl_expira_en_segundos || 900;
       iniciarTemporizador(ttl);
+      guardarSesionReserva(data.reserva_id, ttl, data);
 
-      // Abrir modal de checkout y cerrar drawer lateral
       isDrawerOpen.value = false;
       isCheckoutModalOpen.value = true;
     } catch (err: any) {
       console.warn('API Gateway offline o error de red. Activando modo mock local para reserva:', err);
       
-      // Si el servidor devolvió un 409 (Conflicto por falta de stock)
       if (err.response?.status === 409) {
         reservaStatus.value = 'error';
         reservaError.value = err.response?.data?.detail || 'Stock insuficiente para uno o más productos del carrito.';
         return;
       }
 
-      // Fallback transparente para desarrollo: genera reserva simulada
       const mockId = `RES-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
       reservaId.value = mockId;
-      lastReservaData.value = {
+      const mockData: ReservaStockResponse = {
         reserva_id: mockId,
         ttl_expira_en_segundos: 900,
         monto_total: total.value,
         metodo_pago: 'qr',
         status: 'RESERVA_CONFIRMADA'
       };
+      lastReservaData.value = mockData;
       reservaStatus.value = 'activa';
       iniciarTemporizador(900);
+      guardarSesionReserva(mockId, 900, mockData);
 
       isDrawerOpen.value = false;
       isCheckoutModalOpen.value = true;
@@ -183,12 +288,14 @@ export const useCartStore = defineStore('cart', () => {
 
   async function renovarReserva(clienteId: string = 'cliente-anonimo') {
     detenerTemporizador();
+    limpiarSesionReserva();
     reservaStatus.value = 'idle';
     await iniciarCheckoutConReserva(clienteId);
   }
 
   async function cancelarReserva() {
     detenerTemporizador();
+    limpiarSesionReserva();
     const idToCancel = reservaId.value;
 
     if (idToCancel) {
@@ -221,6 +328,7 @@ export const useCartStore = defineStore('cart', () => {
         sucursal_id: payload.sucursal_id,
         direccion_entrega_id: payload.direccion_entrega || 'Dirección principal',
         subtotal: subtotal.value,
+        descuento: descuento.value,
         costo_envio: payload.costo_envio,
         total: total.value + payload.costo_envio,
         reserva_id: reservaId.value,
@@ -246,18 +354,24 @@ export const useCartStore = defineStore('cart', () => {
 
       lastCreatedOrderCode.value = orderCode;
       detenerTemporizador();
+      limpiarSesionReserva();
       reservaStatus.value = 'confirmada';
       
-      // Vaciar carrito tras venta exitosa
+      // Vaciar carrito tras venta exitosa y limpiar storage
       items.value = [];
       cupon.value = null;
-      descuento.value = 0;
+      try {
+        localStorage.removeItem(STORAGE_KEY_ITEMS);
+      } catch {}
 
       return orderCode;
     } finally {
       isProcessingOrder.value = false;
     }
   }
+
+  // Recuperar sesión activa al inicializar el store
+  recuperarReservaActiva();
 
   return {
     isDrawerOpen,
@@ -272,6 +386,7 @@ export const useCartStore = defineStore('cart', () => {
     removeItem,
     updateQuantity,
     aplicarCupon,
+    removerCupon,
     // Stock reservation state & methods
     isCheckoutModalOpen,
     isReserving,
@@ -292,6 +407,7 @@ export const useCartStore = defineStore('cart', () => {
     detenerTemporizador,
     renovarReserva,
     cancelarReserva,
-    finalizarOrdenConReserva
+    finalizarOrdenConReserva,
+    recuperarReservaActiva
   };
 });

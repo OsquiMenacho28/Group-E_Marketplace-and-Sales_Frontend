@@ -22,7 +22,8 @@ import {
   Sparkles,
   MapPin,
   Loader2,
-  PackageCheck
+  PackageCheck,
+  Tag
 } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -36,6 +37,24 @@ const metodoPago = ref<CheckoutMetodoPago>('qr');
 const direccionEntrega = ref('Av. 6 de Agosto #2450, Sopocachi, La Paz');
 const sucursalSeleccionada = ref('suc-01');
 const notasEntrega = ref('');
+
+// Cupones promocionales (RF-17)
+const codigoCuponInput = ref('');
+const cuponMensaje = ref<{ texto: string; valido: boolean } | null>(null);
+
+function handleAplicarCupon() {
+  if (!codigoCuponInput.value.trim()) return;
+  const res = cartStore.aplicarCupon(codigoCuponInput.value);
+  cuponMensaje.value = { texto: res.mensaje, valido: res.ok };
+  if (res.ok) {
+    codigoCuponInput.value = '';
+  }
+}
+
+function handleRemoverCupon() {
+  cartStore.removerCupon();
+  cuponMensaje.value = null;
+}
 
 // Datos simulados de tarjeta
 const numeroTarjeta = ref('4532 •••• •••• 8892');
@@ -495,6 +514,39 @@ function handleRenovarReserva() {
                   <span class="font-bold text-slate-900 dark:text-white shrink-0">
                     BOB {{ item.total_linea.toFixed(2) }}
                   </span>
+                </div>
+              </div>
+
+              <!-- Input Cupón Promocional (RF-17) -->
+              <div class="pt-3 border-t border-slate-200 dark:border-slate-700 space-y-1.5">
+                <div v-if="cartStore.cupon" class="flex items-center justify-between p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs">
+                  <span class="flex items-center gap-1.5 font-bold text-emerald-800 dark:text-emerald-300">
+                    <Tag class="w-3.5 h-3.5" /> Cupón {{ cartStore.cupon }} activo (-Bs. {{ cartStore.descuento.toFixed(2) }})
+                  </span>
+                  <button @click="handleRemoverCupon" class="text-slate-400 hover:text-rose-600 p-0.5 rounded" title="Quitar cupón">
+                    <X class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div v-else class="space-y-1">
+                  <div class="flex gap-2">
+                    <input
+                      v-model="codigoCuponInput"
+                      @keydown.enter.prevent="handleAplicarCupon"
+                      type="text"
+                      placeholder="Cupón (ej: MAXI10 o BIENVENIDO)"
+                      class="flex-1 px-3 py-1.5 text-xs uppercase bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      @click="handleAplicarCupon"
+                      class="px-3 py-1.5 text-xs font-bold bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white rounded-lg transition-colors"
+                    >
+                      Aplicar
+                    </button>
+                  </div>
+                  <p v-if="cuponMensaje" :class="['text-[11px] font-medium', cuponMensaje.valido ? 'text-emerald-600' : 'text-rose-500']">
+                    {{ cuponMensaje.texto }}
+                  </p>
                 </div>
               </div>
 

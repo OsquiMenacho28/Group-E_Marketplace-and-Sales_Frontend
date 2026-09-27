@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { useCartStore } from '@/stores/cart';
 import { apiClient } from '@/api/client';
 import type { FacetasCatalogo, SugerenciaItem, MarketplaceProduct } from '@/types';
@@ -12,6 +13,8 @@ import MarketplaceFacetSidebar from '@/components/marketplace/MarketplaceFacetSi
 import ProductCard from '@/components/marketplace/ProductCard.vue';
 import ProductGalleryModal from '@/components/marketplace/ProductGalleryModal.vue';
 
+const route = useRoute();
+const router = useRouter();
 const cartStore = useCartStore();
 const wishlistStore = useWishlistStore();
 
@@ -50,6 +53,10 @@ const isMobileFiltersOpen = ref(false);
 
 const products = ref<MarketplaceProduct[]>([]);
 const totalCoincidencias = ref(0);
+
+// Productos Recomendados (RF-19 / US-19 Cross-selling)
+const recommendedProducts = ref<MarketplaceProduct[]>([]);
+const isLoadingRecommendations = ref(false);
 
 // Base de catálogo local de respaldo
 const fallbackProducts: MarketplaceProduct[] = [
@@ -167,6 +174,106 @@ const fallbackProducts: MarketplaceProduct[] = [
   }
 ];
 
+function mapDbProductToMarketplace(dbp: any): MarketplaceProduct {
+  const gallery = (dbp.imagenes_producto || []).sort((a: any, b: any) => a.orden - b.orden);
+  const cover = gallery.find((i: any) => i.es_principal) || gallery[0];
+  const realPrice = Number(dbp.precio || 0);
+
+  return {
+    id: dbp.id,
+    sku: dbp.sku,
+    nombre: dbp.nombre,
+    categoria: dbp.categorias?.nombre || 'General',
+    categoria_id: dbp.categoria_id,
+    marca: dbp.marca || 'MaxiConecta',
+    precio: realPrice > 0 ? realPrice : 999.00,
+    rating: 4.8,
+    stock: dbp.stock ?? 10,
+    badge: realPrice > 8000 ? 'Pro' : (dbp.stock < 5 ? 'Pocas unidades' : 'Disponible'),
+    image: cover?.url || (dbp.imagenes && dbp.imagenes[0]) || 'https://images.unsplash.com/photo-1526738549149-8e07eca6c147?auto=format&fit=crop&w=600&q=80',
+    galleryImages: gallery
+  };
+}
+
+// -----------------------------------------------------------------------------
+// SINCRONIZACIÓN DE FILTROS CON LA URL (DEEP LINKING & HISTORIAL)
+// -----------------------------------------------------------------------------
+let isReadingUrl = false;
+
+function leerFiltrosDeUrl() {
+  isReadingUrl = true;
+  const q = route.query;
+
+  if (q.q && typeof q.q === 'string') {
+    searchQuery.value = q.q;
+    debouncedQuery.value = q.q;
+  } else {
+    searchQuery.value = '';
+    debouncedQuery.value = '';
+  }
+
+  if (q.categoria_ids && typeof q.categoria_ids === 'string') {
+    selectedCategoryIds.value = q.categoria_ids.split(',').filter(Boolean);
+  } else {
+    selectedCategoryIds.value = [];
+  }
+
+  if (q.marcas && typeof q.marcas === 'string') {
+    selectedBrands.value = q.marcas.split(',').filter(Boolean);
+  } else {
+    selectedBrands.value = [];
+  }
+
+  if (q.precio_min) {
+    const pMin = Number(q.precio_min);
+    if (!isNaN(pMin) && pMin > 0) {
+      priceMinInput.value = pMin;
+      appliedPriceMin.value = pMin;
+    }
+  } else {
+    priceMinInput.value = null;
+    appliedPriceMin.value = null;
+  }
+
+  if (q.precio_max) {
+    const pMax = Number(q.precio_max);
+    if (!isNaN(pMax) && pMax > 0) {
+      priceMaxInput.value = pMax;
+      appliedPriceMax.value = pMax;
+    }
+  } else {
+    priceMaxInput.value = null;
+    appliedPriceMax.value = null;
+  }
+
+  onlyInStock.value = q.en_stock === 'true';
+
+  if (q.ordenar_por && typeof q.ordenar_por === 'string') {
+    if (['relevancia', 'precio_asc', 'precio_desc', 'nombre'].includes(q.ordenar_por)) {
+      sortBy.value = q.ordenar_por as any;
+    }
+  } else {
+    sortBy.value = 'relevancia';
+  }
+
+  isReadingUrl = false;
+}
+
+function sincronizarUrlConFiltros() {
+  if (isReadingUrl) return;
+
+  const queryParams: Record<string, string> = {};
+  if (debouncedQuery.value.trim()) queryParams.q = debouncedQuery.value.trim();
+  if (selectedCategoryIds.value.length > 0) queryParams.categoria_ids = selectedCategoryIds.value.join(',');
+  if (selectedBrands.value.length > 0) queryParams.marcas = selectedBrands.value.join(',');
+  if (appliedPriceMin.value !== null && appliedPriceMin.value > 0) queryParams.precio_min = String(appliedPriceMin.value);
+  if (appliedPriceMax.value !== null && appliedPriceMax.value > 0) queryParams.precio_max = String(appliedPriceMax.value);
+  if (onlyInStock.value) queryParams.en_stock = 'true';
+  if (sortBy.value !== 'relevancia') queryParams.ordenar_por = sortBy.value;
+
+  router.replace({ query: queryParams });
+}
+
 // -----------------------------------------------------------------------------
 // DEBOUNCE PARA BÚSQUEDA Y SUGERENCIAS
 // -----------------------------------------------------------------------------
@@ -188,16 +295,28 @@ watch(searchQuery, (newVal) => {
 
   debounceTimeout = setTimeout(() => {
     debouncedQuery.value = newVal.trim();
+    sincronizarUrlConFiltros();
     ejecutarBusqueda();
   }, 300);
 });
 
+// Observar navegación con botones Atrás/Adelante del navegador
+watch(
+  () => route.query,
+  () => {
+    leerFiltrosDeUrl();
+    ejecutarBusqueda();
+  }
+);
+
 onMounted(() => {
+  leerFiltrosDeUrl();
   ejecutarBusqueda();
+  fetchRecommendations();
 });
 
 // -----------------------------------------------------------------------------
-// LLAMADAS AL ENDPOINT DE BÚSQUEDA FACETADA Y SUGERENCIAS
+// LLAMADAS AL ENDPOINT DE BÚSQUEDA, SUGERENCIAS Y RECOMENDACIONES (RF-19)
 // -----------------------------------------------------------------------------
 async function fetchSuggestions(term: string) {
   try {
@@ -225,10 +344,30 @@ async function fetchSuggestions(term: string) {
   }
 }
 
+async function fetchRecommendations(targetProdId?: string, catId?: string) {
+  isLoadingRecommendations.value = true;
+  try {
+    const params: Record<string, any> = { limite: 4 };
+    if (targetProdId) params.id = targetProdId;
+    if (catId) params.categoria_id = catId;
+    const res = await apiClient.get('/api/v1/catalogo/recomendaciones', { params });
+    if (res.data && Array.isArray(res.data) && res.data.length > 0) {
+      recommendedProducts.value = res.data.map(mapDbProductToMarketplace);
+    } else {
+      recommendedProducts.value = fallbackProducts.slice(0, 4);
+    }
+  } catch {
+    recommendedProducts.value = fallbackProducts.slice(0, 4);
+  } finally {
+    isLoadingRecommendations.value = false;
+  }
+}
+
 function selectSuggestion(item: SugerenciaItem) {
   searchQuery.value = item.nombre;
   debouncedQuery.value = item.nombre;
   showSuggestions.value = false;
+  sincronizarUrlConFiltros();
   ejecutarBusqueda();
 }
 
@@ -236,6 +375,7 @@ function clearSearch() {
   searchQuery.value = '';
   debouncedQuery.value = '';
   showSuggestions.value = false;
+  sincronizarUrlConFiltros();
   ejecutarBusqueda();
 }
 
@@ -280,26 +420,7 @@ async function ejecutarBusqueda() {
         total_general: data.items.length
       };
 
-      products.value = data.items.map((dbp: any) => {
-        const gallery = (dbp.imagenes_producto || []).sort((a: any, b: any) => a.orden - b.orden);
-        const cover = gallery.find((i: any) => i.es_principal) || gallery[0];
-        const realPrice = Number(dbp.precio || 0);
-
-        return {
-          id: dbp.id,
-          sku: dbp.sku,
-          nombre: dbp.nombre,
-          categoria: dbp.categorias?.nombre || 'General',
-          categoria_id: dbp.categoria_id,
-          marca: dbp.marca || 'MaxiConecta',
-          precio: realPrice > 0 ? realPrice : 999.00,
-          rating: 4.8,
-          stock: dbp.stock ?? 10,
-          badge: realPrice > 8000 ? 'Pro' : (dbp.stock < 5 ? 'Pocas unidades' : 'Disponible'),
-          image: cover?.url || (dbp.imagenes && dbp.imagenes[0]) || 'https://images.unsplash.com/photo-1526738549149-8e07eca6c147?auto=format&fit=crop&w=600&q=80',
-          galleryImages: gallery
-        };
-      });
+      products.value = data.items.map(mapDbProductToMarketplace);
       catalogUpdatedAt.value = new Date().toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' });
     }
   } catch (err) {
@@ -400,6 +521,7 @@ function toggleCategoria(catId: string) {
   } else {
     selectedCategoryIds.value.push(catId);
   }
+  sincronizarUrlConFiltros();
   ejecutarBusqueda();
 }
 
@@ -410,6 +532,7 @@ function toggleMarca(brandName: string) {
   } else {
     selectedBrands.value.push(brandName);
   }
+  sincronizarUrlConFiltros();
   ejecutarBusqueda();
 }
 
@@ -418,11 +541,13 @@ function aplicarRangoPrecio(min: number | null, max: number | null) {
   priceMaxInput.value = max;
   appliedPriceMin.value = min;
   appliedPriceMax.value = max;
+  sincronizarUrlConFiltros();
   ejecutarBusqueda();
 }
 
 function toggleStock() {
   onlyInStock.value = !onlyInStock.value;
+  sincronizarUrlConFiltros();
   ejecutarBusqueda();
 }
 
@@ -437,6 +562,12 @@ function limpiarTodosLosFiltros() {
   appliedPriceMax.value = null;
   onlyInStock.value = false;
   sortBy.value = 'relevancia';
+  sincronizarUrlConFiltros();
+  ejecutarBusqueda();
+}
+
+function onSortChange() {
+  sincronizarUrlConFiltros();
   ejecutarBusqueda();
 }
 
@@ -550,7 +681,7 @@ function alternarDeseo(prod: MarketplaceProduct) {
       @clear-price-range="aplicarRangoPrecio(null, null)"
       @toggle-stock="toggleStock"
       @clear-all-filters="limpiarTodosLosFiltros"
-      @sort-change="ejecutarBusqueda"
+      @sort-change="onSortChange"
     />
 
     <!-- Layout Principal: Barra Lateral de Filtros Facetados + Cuadrícula de Productos -->
@@ -601,27 +732,63 @@ function alternarDeseo(prod: MarketplaceProduct) {
           />
         </section>
 
-        <!-- Estado Vacío Cuando no hay Coincidencias -->
-        <section v-else class="py-16 px-6 text-center bg-white/90 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-          <div class="w-16 h-16 mx-auto rounded-2xl bg-amber-50 dark:bg-amber-950 flex items-center justify-center text-amber-600 dark:text-amber-400">
-            <Search class="w-8 h-8" />
-          </div>
-          <div class="max-w-md mx-auto space-y-1.5">
-            <h2 class="text-lg font-black text-slate-800 dark:text-white">No encontramos coincidencias</h2>
-            <p class="text-xs text-slate-500 leading-relaxed">
-              No hay productos que coincidan simultáneamente con todos los filtros aplicados. Prueba quitando algunos filtros o buscando un término más general.
-            </p>
-          </div>
-          <div class="pt-2 flex justify-center gap-3">
-            <button
-              @click="limpiarTodosLosFiltros"
-              class="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold shadow-md inline-flex items-center gap-2"
-            >
-              <RotateCcw class="w-3.5 h-3.5" />
-              <span>Restablecer todos los filtros</span>
-            </button>
-          </div>
-        </section>
+        <!-- Estado Vacío Cuando no hay Coincidencias con Recomendaciones (RF-19) -->
+        <div v-else class="space-y-8">
+          <section class="py-12 px-6 text-center bg-white/90 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+            <div class="w-16 h-16 mx-auto rounded-2xl bg-amber-50 dark:bg-amber-950 flex items-center justify-center text-amber-600 dark:text-amber-400">
+              <Search class="w-8 h-8" />
+            </div>
+            <div class="max-w-md mx-auto space-y-1.5">
+              <h2 class="text-lg font-black text-slate-800 dark:text-white">
+                No encontramos coincidencias para "{{ debouncedQuery || 'los filtros aplicados' }}"
+              </h2>
+              <p class="text-xs text-slate-500 leading-relaxed">
+                Ningún producto coincide con esta combinación de filtros. Puedes restablecerlos o descubrir nuestras recomendaciones sugeridas abajo.
+              </p>
+            </div>
+            <div class="pt-2 flex justify-center gap-3">
+              <button
+                @click="limpiarTodosLosFiltros"
+                class="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold shadow-md inline-flex items-center gap-2"
+              >
+                <RotateCcw class="w-3.5 h-3.5" />
+                <span>Restablecer todos los filtros</span>
+              </button>
+            </div>
+          </section>
+
+          <!-- Bloque de Recomendaciones (RF-19 / US-19 Cross-selling) -->
+          <section v-if="recommendedProducts.length > 0" class="space-y-4 pt-2">
+            <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div class="flex items-center gap-2">
+                <div class="p-1 rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400">
+                  <Sparkles class="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 class="text-sm font-extrabold text-slate-900 dark:text-white uppercase tracking-wider">
+                    Productos Recomendados para ti (RF-19)
+                  </h3>
+                  <p class="text-[11px] text-slate-400">Artículos populares y afines disponibles para entrega inmediata</p>
+                </div>
+              </div>
+              <span class="text-xs font-bold text-teal-700 dark:text-teal-400">
+                {{ recommendedProducts.length }} sugerencias
+              </span>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
+              <ProductCard
+                v-for="rec in recommendedProducts"
+                :key="'rec-' + rec.id"
+                :product="rec"
+                :is-in-wishlist="wishlistStore.estaEnDeseos(rec.id)"
+                @open-gallery="openProductGallery"
+                @toggle-wishlist="alternarDeseo"
+                @add-to-cart="agregarAlCarrito"
+              />
+            </div>
+          </section>
+        </div>
       </main>
     </div>
 
