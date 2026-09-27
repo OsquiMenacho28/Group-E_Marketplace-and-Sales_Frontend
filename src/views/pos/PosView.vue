@@ -47,6 +47,7 @@ const total = computed(() => subtotal.value);
 
 // Modal de Cobro
 const isPayModalOpen = ref(false);
+const isSuspendedModalOpen = ref(false);
 const payMethod = ref<'efectivo' | 'tarjeta' | 'qr'>('efectivo');
 const cashGiven = ref<number>(11000);
 const changeDue = computed(() => Math.max(0, (cashGiven.value || 0) - total.value));
@@ -104,22 +105,22 @@ async function suspenderVenta() {
   };
 
   try {
-  if (!cajaId.value) {
-    console.error('No hay caja abierta');
-    return;
-  }
+    if (!cajaId.value) {
+      console.error('No hay caja abierta');
+      return;
+    }
 
-  await apiClient.post(
-    `/api/v1/pos/ventas/${cajaId.value}/suspender`,
-    venta
-  );
+    await apiClient.post(
+      `/api/v1/pos/ventas/${cajaId.value}/suspender`,
+      venta
+    );
 
-  cartItems.value = [];
+    cartItems.value = [];
 
-  await cargarVentasSuspendidas();
+    await cargarVentasSuspendidas();
   } catch (error) {
-  console.error('Error al suspender la venta:', error);
-}
+    console.error('Error al suspender la venta:', error);
+  }
 }
 
 async function cargarVentasSuspendidas() {
@@ -270,22 +271,28 @@ onMounted(() => {
         </div>
 
         <!-- Ventas Suspendidas (RF-12) -->
-        <div v-if="suspendedSales.length > 0" class="mt-4 p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-lg flex items-center justify-between">
+        <div
+          v-if="suspendedSales.length > 0"
+          class="mt-4 p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-lg flex items-center justify-between"
+        >
           <div class="flex items-center gap-2 text-amber-800 dark:text-amber-300 text-xs font-semibold">
             <PauseCircle class="w-4 h-4 text-amber-600" />
-            <span>{{ suspendedSales.length }} venta(s) suspendida(s) en espera:</span>
+
+            <span>
+              {{ suspendedSales.length }} venta(s) suspendida(s) en espera
+            </span>
           </div>
-          <div class="flex gap-2">
-            <button
-              v-for="(s, idx) in suspendedSales"
-              :key="s.id"
-              @click="reanudarVenta(idx)"
-              class="text-xs bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1 rounded font-medium flex items-center gap-1 shadow-sm"
-            >
-              <PlayCircle class="w-3.5 h-3.5" /> Ticket #{{ s.id }} (BOB {{ Number(s.subtotal).toFixed(2) }}))
-            </button>
-          </div>
+
+          <button
+            type="button"
+            @click="isSuspendedModalOpen = true"
+            class="text-xs bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 shadow-sm"
+          >
+            <PlayCircle class="w-4 h-4" />
+            Ver ventas en espera
+          </button>
         </div>
+
       </div>
 
       <!-- Columna Derecha: Panel de Cobro y Totales -->
@@ -411,6 +418,104 @@ onMounted(() => {
               <Printer class="w-4 h-4" /> Imprimir Ticket y Nueva Venta
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal de Ventas en Espera (KAN-331) -->
+    <div
+      v-if="isSuspendedModalOpen"
+      class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="bg-white dark:bg-slate-900 w-full max-w-2xl rounded-2xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800"
+      >
+        <!-- Encabezado -->
+        <div class="flex items-center justify-between mb-5">
+          <div>
+            <div class="flex items-center gap-2">
+              <PauseCircle class="w-6 h-6 text-amber-500" />
+
+              <h3 class="text-lg font-bold text-slate-900 dark:text-white">
+                Ventas en espera
+              </h3>
+            </div>
+
+            <p class="text-xs text-slate-500 mt-1">
+              Selecciona una venta para recuperarla al carrito activo.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            @click="isSuspendedModalOpen = false"
+            class="text-slate-400 hover:text-slate-700 dark:hover:text-white text-xl"
+            aria-label="Cerrar"
+          >
+            ✕
+          </button>
+        </div>
+
+        <!-- Lista de ventas -->
+        <div
+          v-if="suspendedSales.length > 0"
+          class="space-y-3 max-h-80 overflow-y-auto"
+        >
+          <div
+            v-for="(sale, idx) in suspendedSales"
+            :key="sale.id"
+            class="border border-slate-200 dark:border-slate-700 rounded-xl p-4 flex items-center justify-between gap-4"
+          >
+            <div>
+              <p class="font-bold text-slate-900 dark:text-white">
+                Ticket #{{ sale.id }}
+              </p>
+
+              <p class="text-xs text-slate-500 mt-1">
+                Cliente: {{ sale.cliente_referencia }}
+              </p>
+
+              <p class="text-sm font-semibold text-amber-600 mt-2">
+                BOB {{ Number(sale.subtotal).toFixed(2) }}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              @click="reanudarVenta(idx); isSuspendedModalOpen = false"
+              class="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2"
+            >
+              <PlayCircle class="w-4 h-4" />
+              Recuperar
+            </button>
+          </div>
+        </div>
+
+        <!-- Sin ventas -->
+        <div
+          v-else
+          class="text-center py-10 text-slate-500"
+        >
+          <PauseCircle class="w-10 h-10 mx-auto mb-3 text-slate-300" />
+
+          <p class="font-semibold">
+            No hay ventas en espera.
+          </p>
+
+          <p class="text-xs mt-1">
+            Las ventas suspendidas aparecerán aquí.
+          </p>
+        </div>
+
+        <!-- Pie -->
+        <div class="flex justify-end mt-5 pt-4 border-t border-slate-200 dark:border-slate-700">
+          <button
+            type="button"
+            @click="isSuspendedModalOpen = false"
+            class="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
+          >
+            Cerrar
+          </button>
         </div>
       </div>
     </div>
