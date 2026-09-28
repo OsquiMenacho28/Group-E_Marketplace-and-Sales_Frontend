@@ -684,6 +684,16 @@ const preciosDual = ref([
 function convertirAUsd(precioBob: number) {
   return precioBob / tipoCambioUsd;
 }
+
+function guardarAsignaciones() {
+  actionFeedback.value = {
+    message: 'Matriz de asignación de listas de precios por sucursal guardada exitosamente.',
+    type: 'success'
+  };
+  setTimeout(() => {
+    actionFeedback.value = null;
+  }, 4000);
+}
 </script>
 
 <template>
@@ -1809,8 +1819,9 @@ function convertirAUsd(precioBob: number) {
 
           <button
             type="button"
+            @click="guardarAsignaciones"
             class="px-4 py-2 bg-blue-600 hover:bg-blue-700
-                  text-white text-xs font-semibold rounded-lg shadow-sm"
+                  text-white text-xs font-semibold rounded-lg shadow-sm active:scale-95 transition-all"
           >
             Guardar asignaciones
           </button>

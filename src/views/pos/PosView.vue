@@ -147,9 +147,9 @@ async function suspenderVenta() {
 
   const venta = {
     id: Date.now().toString(),
-    cliente_referencia: 'POS-CLIENTE',
+    cliente_referencia: fiscalData.value.razon_social || 'POS-CLIENTE',
     items: cartItems.value.map(item => ({
-      variante_id: crypto.randomUUID(),
+      variante_id: item.variante_id || crypto.randomUUID(),
       sku: item.sku,
       nombre: item.nombre,
       cantidad: item.cantidad,
@@ -213,12 +213,17 @@ async function reanudarVenta(index: number) {
     );
 
     cartItems.value = response.data.items.map((item: any) => ({
-      id: item.variante_id,
+      id: item.variante_id || item.sku || Date.now().toString(),
       sku: item.sku,
       nombre: item.nombre,
       precio: Number(item.precio_unitario),
-      cantidad: item.cantidad
+      cantidad: item.cantidad,
+      variante_id: item.variante_id
     }));
+
+    if (sale.cliente_referencia && sale.cliente_referencia !== 'POS-CLIENTE') {
+      fiscalData.value.razon_social = sale.cliente_referencia;
+    }
 
     suspendedSales.value.splice(index, 1);
   } catch (error) {
@@ -270,8 +275,12 @@ function resetPos() {
   facturaEmitida.value = null;
 }
 
-onMounted(() => {
-  abrirCaja();
+onMounted(async () => {
+  await abrirCaja();
+  await loadPosCatalog();
+  if (cajaId.value) {
+    await cargarVentasSuspendidas();
+  }
 });
 
 </script>
