@@ -31,7 +31,8 @@ import {
   CheckCircle2,
   SlidersHorizontal,
   Sparkles,
-  Eye
+  Eye,
+  Settings2
 } from 'lucide-vue-next';
 
 interface CategoryNode {
@@ -614,6 +615,75 @@ onMounted(() => {
   loadCatalogCategories();
   loadProductsList();
 });
+const sucursales = ref([
+  {
+    id: 'suc-central',
+    nombre: 'Sucursal Central - La Paz',
+    precios: {
+      web: 'Lista Web Retail',
+      pos: 'Lista POS Retail',
+      b2b: 'Lista B2B Corporativa'
+    }
+  },
+  {
+    id: 'suc-sur',
+    nombre: 'Sucursal Sur - La Paz',
+    precios: {
+      web: 'Lista Web Retail',
+      pos: 'Lista POS Retail',
+      b2b: 'Lista B2B Corporativa'
+    }
+  },
+  {
+    id: 'suc-calacoto',
+    nombre: 'Sucursal Calacoto',
+    precios: {
+      web: 'Lista Web Retail',
+      pos: 'Lista POS Retail',
+      b2b: 'Lista B2B Corporativa'
+    }
+  }
+]);
+
+const listasPrecios = [
+  'Lista Web Retail',
+  'Lista POS Retail',
+  'Lista B2B Corporativa',
+  'Lista Promocional'
+];
+
+const tipoCambioUsd = 6.96;
+
+const preciosDual = ref([
+  {
+    id: 'precio-001',
+    producto: 'Monitor LG UltraGear 27"',
+    lista: 'Lista Web Retail',
+    precioBob: 8999.00
+  },
+  {
+    id: 'precio-002',
+    producto: 'Laptop Dell XPS 15',
+    lista: 'Lista Web Retail',
+    precioBob: 12500.00
+  },
+  {
+    id: 'precio-003',
+    producto: 'Laptop Dell XPS 15',
+    lista: 'Lista B2B Corporativa',
+    precioBob: 11200.00
+  },
+  {
+    id: 'precio-004',
+    producto: 'Monitor LG UltraGear 27"',
+    lista: 'Lista POS Retail',
+    precioBob: 8799.00
+  }
+]);
+
+function convertirAUsd(precioBob: number) {
+  return precioBob / tipoCambioUsd;
+}
 </script>
 
 <template>
@@ -1609,6 +1679,288 @@ onMounted(() => {
             {{ isDeletingProduct ? 'Eliminando...' : 'Sí, eliminar producto' }}
           </button>
         </div>
+      </div>
+
+            <!-- Matriz de asignación de precios (KAN-298) -->
+      <div
+        class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4"
+      >
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+          <div>
+            <h3 class="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+              <Settings2 class="w-4 h-4 text-blue-500" />
+              Matriz de asignación de precios
+            </h3>
+
+            <p class="text-xs text-slate-500 mt-1">
+              Asigna la lista de precios correspondiente a cada sucursal y canal.
+            </p>
+          </div>
+
+          <span
+            class="px-2.5 py-1 rounded-full text-[10px] font-bold
+                  bg-blue-50 text-blue-700
+                  dark:bg-blue-950/40 dark:text-blue-300"
+          >
+            KAN-298
+          </span>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead
+              class="bg-slate-50 dark:bg-slate-800
+                    text-slate-500 font-semibold"
+            >
+              <tr>
+                <th class="p-3">Sucursal</th>
+                <th class="p-3">Web</th>
+                <th class="p-3">POS</th>
+                <th class="p-3">B2B</th>
+              </tr>
+            </thead>
+
+            <tbody
+              class="divide-y divide-slate-100
+                    dark:divide-slate-800"
+            >
+              <tr
+                v-for="sucursal in sucursales"
+                :key="sucursal.id"
+              >
+                <td class="p-3">
+                  <div class="font-semibold text-slate-800 dark:text-slate-200">
+                    {{ sucursal.nombre }}
+                  </div>
+                </td>
+
+                <td class="p-3">
+                  <select
+                    v-model="sucursal.precios.web"
+                    class="w-full min-w-[170px] px-2.5 py-2
+                          border border-slate-200 dark:border-slate-700
+                          rounded-lg bg-white dark:bg-slate-800
+                          text-slate-700 dark:text-slate-200
+                          text-xs focus:outline-none focus:ring-2
+                          focus:ring-blue-500"
+                  >
+                    <option
+                      v-for="lista in listasPrecios"
+                      :key="`web-${sucursal.id}-${lista}`"
+                      :value="lista"
+                    >
+                      {{ lista }}
+                    </option>
+                  </select>
+                </td>
+
+                <td class="p-3">
+                  <select
+                    v-model="sucursal.precios.pos"
+                    class="w-full min-w-[170px] px-2.5 py-2
+                          border border-slate-200 dark:border-slate-700
+                          rounded-lg bg-white dark:bg-slate-800
+                          text-slate-700 dark:text-slate-200
+                          text-xs focus:outline-none focus:ring-2
+                          focus:ring-blue-500"
+                  >
+                    <option
+                      v-for="lista in listasPrecios"
+                      :key="`pos-${sucursal.id}-${lista}`"
+                      :value="lista"
+                    >
+                      {{ lista }}
+                    </option>
+                  </select>
+                </td>
+
+                <td class="p-3">
+                  <select
+                    v-model="sucursal.precios.b2b"
+                    class="w-full min-w-[170px] px-2.5 py-2
+                          border border-slate-200 dark:border-slate-700
+                          rounded-lg bg-white dark:bg-slate-800
+                          text-slate-700 dark:text-slate-200
+                          text-xs focus:outline-none focus:ring-2
+                          focus:ring-blue-500"
+                  >
+                    <option
+                      v-for="lista in listasPrecios"
+                      :key="`b2b-${sucursal.id}-${lista}`"
+                      :value="lista"
+                    >
+                      {{ lista }}
+                    </option>
+                  </select>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div
+          class="flex items-center justify-between pt-3
+                border-t border-slate-100 dark:border-slate-800"
+        >
+          <p class="text-[11px] text-slate-400">
+            Los cambios realizados en esta vista representan la asignación
+            actual de cada lista por sucursal y canal.
+          </p>
+
+          <button
+            type="button"
+            class="px-4 py-2 bg-blue-600 hover:bg-blue-700
+                  text-white text-xs font-semibold rounded-lg shadow-sm"
+          >
+            Guardar asignaciones
+          </button>
+        </div>
+      </div>
+
+            <!-- Visualización de precios dual BOB / USD (KAN-299) -->
+      <div
+        class="bg-white dark:bg-slate-900 p-5 rounded-xl
+              border border-slate-200 dark:border-slate-800
+              shadow-sm space-y-4"
+      >
+        <div class="flex flex-col sm:flex-row justify-between
+                    items-start sm:items-center gap-3">
+
+          <div>
+            <h3
+              class="text-sm font-bold text-slate-800
+                    dark:text-white flex items-center gap-2"
+            >
+              <DollarSign class="w-4 h-4 text-emerald-500" />
+
+              Visualización de precios
+            </h3>
+
+            <p class="text-xs text-slate-500 mt-1">
+              Consulta los precios en moneda nacional y su equivalente en dólares.
+            </p>
+          </div>
+
+          <span
+            class="px-2.5 py-1 rounded-full text-[10px]
+                  font-bold bg-emerald-50 text-emerald-700
+                  dark:bg-emerald-950/40 dark:text-emerald-300"
+          >
+            BOB / USD
+          </span>
+        </div>
+
+        <!-- Tipo de cambio -->
+        <div
+          class="flex items-center justify-between
+                px-4 py-3 rounded-lg
+                bg-slate-50 dark:bg-slate-800
+                border border-slate-100 dark:border-slate-700"
+        >
+          <span class="text-xs text-slate-500">
+            Tipo de cambio referencial
+          </span>
+
+          <span class="text-sm font-bold text-slate-800 dark:text-white">
+            1 USD = {{ tipoCambioUsd.toFixed(2) }} BOB
+          </span>
+        </div>
+
+        <!-- Lista de precios -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+          <div
+            v-for="precio in preciosDual"
+            :key="precio.id"
+            class="p-4 rounded-xl
+                  border border-slate-200
+                  dark:border-slate-700
+                  hover:shadow-sm transition"
+          >
+            <div class="flex justify-between items-start gap-3">
+
+              <div>
+                <p
+                  class="text-sm font-bold
+                        text-slate-800 dark:text-white"
+                >
+                  {{ precio.producto }}
+                </p>
+
+                <p class="text-[11px] text-slate-400 mt-1">
+                  {{ precio.lista }}
+                </p>
+              </div>
+
+              <span
+                class="text-[10px] font-semibold
+                      px-2 py-1 rounded-full
+                      bg-blue-50 text-blue-700
+                      dark:bg-blue-950/40
+                      dark:text-blue-300"
+              >
+                Precio
+              </span>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3 mt-4">
+
+              <!-- BOB -->
+              <div
+                class="p-3 rounded-lg
+                      bg-slate-50 dark:bg-slate-800"
+              >
+                <p class="text-[10px] uppercase
+                          text-slate-400 font-semibold">
+                  Bolivianos
+                </p>
+
+                <p
+                  class="text-lg font-extrabold
+                        text-slate-900 dark:text-white mt-1"
+                >
+                  BOB
+                  {{ precio.precioBob.toLocaleString('es-BO', {
+                    minimumFractionDigits: 2
+                  }) }}
+                </p>
+              </div>
+
+              <!-- USD -->
+              <div
+                class="p-3 rounded-lg
+                      bg-emerald-50
+                      dark:bg-emerald-950/30"
+              >
+                <p class="text-[10px] uppercase
+                          text-emerald-600
+                          dark:text-emerald-400
+                          font-semibold">
+                  Dólares
+                </p>
+
+                <p
+                  class="text-lg font-extrabold
+                        text-emerald-700
+                        dark:text-emerald-300 mt-1"
+                >
+                  USD
+                  {{ convertirAUsd(precio.precioBob).toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                  }) }}
+                </p>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+
+        <p class="text-[10px] text-slate-400">
+          El equivalente USD se calcula a partir del precio BOB utilizando
+          el tipo de cambio referencial mostrado arriba.
+        </p>
       </div>
     </div>
   </div>
