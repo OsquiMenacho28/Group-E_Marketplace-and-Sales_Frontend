@@ -15,9 +15,13 @@ export const apiClient = axios.create({
 
 // Interceptor para inyectar token JWT y normalizar URLs
 apiClient.interceptors.request.use((config) => {
-  if (config.url && config.baseURL?.endsWith('/api')) {
-    // Normalizar URLs que ya traen prefijo /api si la baseURL ya incluye /api
-    if (config.url.startsWith('/api/')) {
+  if (config.url) {
+    // Si la ruta inicia con /v1/ sin el prefijo /api, normalizarla automáticamente
+    if (config.url.startsWith('/v1/')) {
+      config.url = `/api${config.url}`;
+    }
+    if (config.baseURL?.endsWith('/api') && config.url.startsWith('/api/')) {
+      // Normalizar URLs que ya traen prefijo /api si la baseURL ya incluye /api
       config.url = config.url.replace(/^\/api/, '');
     }
   }

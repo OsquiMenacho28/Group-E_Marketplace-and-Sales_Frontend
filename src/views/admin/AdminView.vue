@@ -32,7 +32,8 @@ import {
   SlidersHorizontal,
   Sparkles,
   Eye,
-  Settings2
+  Settings2,
+  Layers
 } from 'lucide-vue-next';
 
 interface CategoryNode {
@@ -119,18 +120,12 @@ function showFeedback(message: string, type: 'success' | 'error' = 'success') {
 async function loadProductsList() {
   isLoadingProducts.value = true;
   try {
-    const res = await apiClient.get('/productos');
+    const res = await apiClient.get('/api/v1/catalogo/productos');
     const data = res.data.productos || res.data || [];
     productsList.value = Array.isArray(data) ? data : [];
   } catch (err: any) {
-    console.warn('Fallo cargando /productos, intentando /v1/catalogo/productos:', err);
-    try {
-      const altRes = await apiClient.get('/v1/catalogo/productos');
-      const altData = Array.isArray(altRes.data) ? altRes.data : altRes.data.productos || [];
-      productsList.value = Array.isArray(altData) ? altData : [];
-    } catch {
-      showFeedback('No se pudo cargar la lista de productos del catálogo.', 'error');
-    }
+    console.error('Error cargando catálogo de productos:', err);
+    showFeedback('No se pudo cargar la lista de productos del catálogo.', 'error');
   } finally {
     isLoadingProducts.value = false;
     // Sincronizar selector de matriz de precios con productos reales de la BD
@@ -150,11 +145,11 @@ async function loadProductsList() {
 // Cambio rápido de ciclo de vida (KAN-291: publicado, borrador, inactivo, descontinuado)
 async function quickChangeStatus(prod: Producto, nuevoEstado: string) {
   try {
-    await apiClient.patch(`/productos/${prod.id}/estado`, { estado: nuevoEstado });
+    await apiClient.patch(`/api/v1/catalogo/productos/${prod.id}`, { estado: nuevoEstado });
     prod.estado = nuevoEstado;
     showFeedback(`El estado de "${prod.nombre}" ahora es "${nuevoEstado.toUpperCase()}".`);
   } catch (err: any) {
-    showFeedback(err.response?.data?.error || 'Error al cambiar estado del producto.', 'error');
+    showFeedback(err.response?.data?.detail || err.response?.data?.error || 'Error al cambiar estado del producto.', 'error');
   }
 }
 
@@ -188,14 +183,11 @@ async function submitEditProduct() {
   isSavingEdit.value = true;
   editFormError.value = '';
   try {
-    const res = await apiClient.put(`/productos/${editingProduct.value.id}`, {
-      sku: editingProduct.value.sku.trim().toUpperCase(),
+    const res = await apiClient.patch(`/api/v1/catalogo/productos/${editingProduct.value.id}`, {
       nombre: editingProduct.value.nombre.trim(),
       marca: editingProduct.value.marca.trim() || null,
       descripcion: editingProduct.value.descripcion.trim() || null,
-      categoria_id: editingProduct.value.categoria_id || null,
       precio: Number(editingProduct.value.precio) || 0,
-      precio_costo: Number(editingProduct.value.precio_costo) || 0,
       estado: editingProduct.value.estado
     });
 
@@ -210,9 +202,9 @@ async function submitEditProduct() {
       };
     }
     isEditModalOpen.value = false;
-    showFeedback('Producto actualizado exitosamente con SKU y validaciones validadas.');
+    showFeedback('Producto actualizado exitosamente.');
   } catch (err: any) {
-    editFormError.value = err.response?.data?.error || 'Error al guardar los cambios del producto.';
+    editFormError.value = err.response?.data?.detail || err.response?.data?.error || 'Error al guardar los cambios del producto.';
   } finally {
     isSavingEdit.value = false;
   }
@@ -223,12 +215,12 @@ async function confirmDeleteProduct() {
   if (!productToDelete.value) return;
   isDeletingProduct.value = true;
   try {
-    await apiClient.delete(`/productos/${productToDelete.value.id}`);
+    await apiClient.delete(`/api/v1/catalogo/productos/${productToDelete.value.id}`);
     productsList.value = productsList.value.filter(p => p.id !== productToDelete.value?.id);
     showFeedback(`Producto "${productToDelete.value.nombre}" eliminado del catálogo.`);
     productToDelete.value = null;
   } catch (err: any) {
-    showFeedback(err.response?.data?.error || 'Error al eliminar producto.', 'error');
+    showFeedback(err.response?.data?.detail || err.response?.data?.error || 'Error al eliminar producto.', 'error');
   } finally {
     isDeletingProduct.value = false;
   }
@@ -472,7 +464,7 @@ const FALLBACK_CATEGORIES: CatalogCategory[] = [
 
 async function loadCatalogCategories() {
   try {
-    const response = await apiClient.get<CatalogCategory[]>('/v1/catalogo/categorias');
+    const response = await apiClient.get<CatalogCategory[]>('/api/v1/catalogo/categorias');
     const cats = Array.isArray(response.data) ? response.data : [];
     catalogCategories.value = cats.length > 0 ? cats : FALLBACK_CATEGORIES;
     if (!selectedProductCategory.value && catalogCategories.value.length > 0) {
