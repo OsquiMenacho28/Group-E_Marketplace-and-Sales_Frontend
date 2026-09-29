@@ -88,6 +88,24 @@ defineEmits<{
         <div class="mt-1.5">
           <StockBadge :sku="product.sku" />
         </div>
+
+        <!-- Atributos Dinámicos de la Jerarquía / Variante -->
+        <div v-if="product.atributos && Object.keys(product.atributos).length > 0" class="flex flex-wrap gap-1 mt-2">
+          <span
+            v-for="([key, val]) in Object.entries(product.atributos).slice(0, 3)"
+            :key="key"
+            class="inline-flex items-center text-[10px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700/80"
+          >
+            <span class="text-slate-400 font-normal mr-1">{{ key }}:</span> {{ val }}
+          </span>
+          <span
+            v-if="Object.keys(product.atributos).length > 3"
+            class="text-[10px] text-teal-600 dark:text-teal-400 font-bold self-center cursor-pointer hover:underline"
+            @click="$emit('openGallery', product)"
+          >
+            +{{ Object.keys(product.atributos).length - 3 }} más
+          </span>
+        </div>
       </div>
 
       <!-- Precio y Acción de Compra -->

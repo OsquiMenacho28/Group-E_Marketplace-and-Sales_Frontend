@@ -23,6 +23,7 @@ interface PosSyncState {
   conectado: boolean;
   sincronizando: boolean;
   ultimoEvento: string | null;
+  historialEventos: any[];
   eventSource: EventSource | null;
 }
 
@@ -41,6 +42,7 @@ export const usePosSyncStore = defineStore('posSync', {
     conectado: false,
     sincronizando: false,
     ultimoEvento: null,
+    historialEventos: [],
     eventSource: null,
   }),
 
@@ -51,13 +53,13 @@ export const usePosSyncStore = defineStore('posSync', {
 
   actions: {
     /** Hidrata la caché local trayendo todas las páginas pendientes desde la última sincronización. */
-    async hidratarCacheLocal() {
+    async hidratarCacheLocal(forceFromBeginning = false) {
       if (this.sincronizando) return;
       this.sincronizando = true;
       try {
         let cursor: string | undefined;
         let hayMas = true;
-        const since = this.ultimaSincronizacion ?? undefined;
+        const since = forceFromBeginning ? undefined : (this.ultimaSincronizacion ?? undefined);
         let maxTimestamp = since;
 
         while (hayMas) {
@@ -84,23 +86,46 @@ export const usePosSyncStore = defineStore('posSync', {
       }
     },
 
+    /** Fuerza una resincronización completa trayendo todo el catálogo delta */
+    async forzarResincronizacion() {
+      await this.hidratarCacheLocal(true);
+      this.ultimoEvento = 'Catálogo resincronizado completamente.';
+    },
+
     /** Abre (o reabre) la suscripción SSE a cambios de catálogo en tiempo real. */
     iniciarEscuchaEnTiempoReal() {
       if (this.eventSource) return;
       this.eventSource = suscribirseACambiosDeCatalogo(
         (evento: any) => {
-          this._aplicarItem({
-            id: evento.producto_id ?? evento.id,
-            sku: evento.sku,
-            nombre: evento.nombre,
-            precio_referencia: evento.precio ?? 0,
-            estado: evento.estado ?? 'publicado',
-            updated_at: evento.updated_at ?? evento.emitido_en,
-          } as SyncCatalogoItem);
-          this._persistirCatalogo();
-          this.ultimaSincronizacion = evento.emitido_en;
-          localStorage.setItem(STORAGE_KEY_LAST_SYNC, evento.emitido_en);
-          this.ultimoEvento = `${evento.tipo === 'producto_creado' ? 'Nuevo producto' : 'Precio actualizado'}: ${evento.nombre}`;
+          this.historialEventos.unshift(evento);
+          if (this.historialEventos.length > 30) {
+            this.historialEventos.pop();
+          }
+
+          if (evento.tipo === 'sincronizacion_masiva' || evento.tipo === 'catalogo_resincronizado') {
+            this.hidratarCacheLocal(true);
+            this.ultimoEvento = 'Sincronización masiva ejecutada por el Administrador';
+          } else if (evento.sku) {
+            this._aplicarItem({
+              id: evento.producto_id ?? evento.id,
+              sku: evento.sku,
+              nombre: evento.nombre,
+              precio_referencia: evento.precio ?? 0,
+              estado: evento.estado ?? 'publicado',
+              updated_at: evento.updated_at ?? evento.emitido_en,
+            } as SyncCatalogoItem);
+            this._persistirCatalogo();
+            this.ultimaSincronizacion = evento.emitido_en;
+            localStorage.setItem(STORAGE_KEY_LAST_SYNC, evento.emitido_en);
+            this.ultimoEvento = `${evento.tipo === 'producto_creado' ? 'Nuevo producto' : 'Precio actualizado'}: ${evento.nombre} (${evento.precio ? 'BOB ' + evento.precio : ''})`;
+          }
+
+          // Disparar evento para que vistas activas (POS, Marketplace) reaccionen
+          try {
+            window.dispatchEvent(new CustomEvent('maxiconecta:catalogo-actualizado', { detail: evento }));
+          } catch {
+            // Entorno sin window
+          }
         },
         (conectado) => {
           this.conectado = conectado;

@@ -3,7 +3,8 @@ import { ref, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { useCartStore } from '@/stores/cart';
 import { useAuthStore } from '@/stores/auth';
-import type { CheckoutModalidad, CheckoutMetodoPago } from '@/types';
+import FiscalBillingForm from '@/components/FiscalBillingForm.vue';
+import type { CheckoutModalidad, CheckoutMetodoPago, DatosFiscales } from '@/types';
 import {
   Clock,
   ShieldCheck,
@@ -23,7 +24,10 @@ import {
   MapPin,
   Loader2,
   PackageCheck,
-  Tag
+  Tag,
+  Printer,
+  FileText,
+  ExternalLink
 } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -64,6 +68,22 @@ const cvv = ref('782');
 
 // Copiar QR / Enlace
 const isCopied = ref(false);
+
+// Datos de Facturación Legal Electrónica (NIT / CI)
+const fiscalData = ref<DatosFiscales>({
+  modalidad: 'con_factura',
+  tipo_documento: 'NIT',
+  nit_ci: authStore.user?.nit_ci || '',
+  razon_social: authStore.user?.razon_social || authStore.user?.nombre_completo || '',
+  email_facturacion: authStore.user?.email || '',
+  guardar_perfil: true
+});
+
+const isFiscalValid = ref(true);
+
+function imprimirFactura() {
+  window.print();
+}
 
 const sucursales = [
   { id: 'suc-01', nombre: 'Sucursal Sopocachi', direccion: 'Av. 20 de Octubre #1820', tiempo: 'Retiro en 2 horas' },
@@ -116,6 +136,11 @@ function copiarCodigoPago() {
 async function handleConfirmarOrden() {
   if (cartStore.reservaStatus === 'expirada') return;
 
+  if (fiscalData.value.modalidad === 'con_factura' && !isFiscalValid.value) {
+    alert('Por favor verifica el NIT/CI y la Razón Social antes de procesar el pago.');
+    return;
+  }
+
   const clienteId = authStore.user?.id || 'cliente-anonimo';
   
   await cartStore.finalizarOrdenConReserva(
@@ -125,7 +150,8 @@ async function handleConfirmarOrden() {
       sucursal_id: tipoDespacho.value === 'retiro_sucursal' ? sucursalSeleccionada.value : undefined,
       direccion_entrega: tipoDespacho.value === 'domicilio' ? direccionEntrega.value : undefined,
       costo_envio: costoEnvio.value,
-      notas: notasEntrega.value
+      notas: notasEntrega.value,
+      datos_fiscales: fiscalData.value
     },
     clienteId
   );
@@ -172,12 +198,10 @@ function handleRenovarReserva() {
               <h2 class="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
                 Checkout Seguro · MaxiConecta
               </h2>
-              <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wide uppercase bg-blue-100 text-blue-700 dark:bg-blue-900/60 dark:text-blue-300">
-                RF-14 · RIO-INV-02
-              </span>
+              
             </div>
             <p class="text-xs text-slate-500 dark:text-slate-400">
-              Reserva temporal y bloqueo concurrente de inventario
+              Compra rápida y protegida
             </p>
           </div>
         </div>
@@ -233,53 +257,112 @@ function handleRenovarReserva() {
 
         <p class="text-[11px] opacity-75 flex items-center gap-1.5">
           <ShieldCheck class="w-3.5 h-3.5 shrink-0" />
-          Las existencias han sido bloqueadas temporalmente en el ERP de Inventarios para evitar sobreventas concurrentes mientras completas el pago.
+          Tus productos están reservados temporalmente para que nadie te los quite mientras completas tu compra.
         </p>
       </section>
 
       <!-- CUERPO PRINCIPAL DEL CHECKOUT -->
       <div class="p-6 overflow-y-auto flex-1 space-y-6 relative">
         <!-- VISTA DE ÉXITO -->
-        <div v-if="step === 'exito'" class="py-8 px-4 text-center space-y-5">
-          <div class="w-20 h-20 mx-auto rounded-3xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shadow-lg border border-emerald-200 dark:border-emerald-800 animate-bounce">
-            <CheckCircle2 class="w-10 h-10" />
+        <div v-if="step === 'exito'" class="py-6 px-4 text-center space-y-5">
+          <div class="w-16 h-16 mx-auto rounded-3xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shadow-lg border border-emerald-200 dark:border-emerald-800 animate-bounce">
+            <CheckCircle2 class="w-8 h-8" />
           </div>
 
-          <div class="space-y-2 max-w-md mx-auto">
-            <h3 class="text-2xl font-black text-slate-900 dark:text-white">
+          <div class="space-y-1 max-w-md mx-auto">
+            <h3 class="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
               ¡Compra Confirmada con Éxito!
             </h3>
-            <p class="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
-              Tu orden ha sido registrada. El stock reservado temporalmente ha pasado a descuento definitivo en Inventarios (RIO-INV-03).
+            <p class="text-xs text-slate-600 dark:text-slate-400">
+              Tu orden y comprobante fiscal electrónico han sido emitidos y registrados en el sistema.
             </p>
           </div>
 
-          <!-- Tarjeta de Resumen de Orden -->
-          <div class="max-w-md mx-auto p-5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl text-left space-y-3">
-            <div class="flex justify-between items-center text-xs pb-3 border-b border-slate-200 dark:border-slate-700">
-              <span class="text-slate-500">Código de Orden:</span>
-              <span class="font-mono font-bold text-blue-600 dark:text-blue-400 text-sm">
-                {{ cartStore.lastCreatedOrderCode }}
+          <!-- Factura Electrónica Timbrada Oficial (SIN / Impuestos Nacionales) -->
+          <div class="max-w-md mx-auto p-5 bg-white dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700 rounded-2xl text-left space-y-3 shadow-md">
+            <div class="flex justify-between items-center pb-3 border-b border-slate-200 dark:border-slate-700">
+              <div class="flex items-center gap-2">
+                <FileText class="w-5 h-5 text-blue-600" />
+                <div>
+                  <h4 class="text-xs font-black uppercase text-slate-900 dark:text-white">Factura Electrónica en Línea</h4>
+                  <p class="text-[10px] text-slate-500">MaxiConecta Bolivia S.R.L. · NIT: 1028374029</p>
+                </div>
+              </div>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                TIMBRADA (SIN)
               </span>
             </div>
-            <div class="flex justify-between text-xs">
-              <span class="text-slate-500">Modalidad:</span>
-              <span class="font-medium capitalize">{{ tipoDespacho === 'domicilio' ? 'Envío a Domicilio' : 'Retiro en Sucursal' }}</span>
+
+            <div class="grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <span class="text-[10px] text-slate-500">N° Factura:</span>
+                <p class="font-mono font-bold text-slate-900 dark:text-white">
+                  {{ cartStore.lastEmittedInvoice?.numero_factura || '1001' }}
+                </p>
+              </div>
+              <div>
+                <span class="text-[10px] text-slate-500">Código de Orden:</span>
+                <p class="font-mono font-bold text-blue-600 dark:text-blue-400">
+                  {{ cartStore.lastCreatedOrderCode }}
+                </p>
+              </div>
+              <div>
+                <span class="text-[10px] text-slate-500">Razón Social:</span>
+                <p class="font-bold text-slate-800 dark:text-slate-200 uppercase truncate">
+                  {{ cartStore.lastEmittedInvoice?.datos_comprador?.razon_social || fiscalData.razon_social || 'CONSUMIDOR FINAL' }}
+                </p>
+              </div>
+              <div>
+                <span class="text-[10px] text-slate-500">NIT / CI:</span>
+                <p class="font-mono font-bold text-slate-800 dark:text-slate-200">
+                  {{ cartStore.lastEmittedInvoice?.datos_comprador?.nit_ci || fiscalData.nit_ci || '0' }}
+                </p>
+              </div>
             </div>
-            <div class="flex justify-between text-xs">
-              <span class="text-slate-500">Método de Pago:</span>
-              <span class="font-medium uppercase">{{ metodoPago }}</span>
+
+            <div class="pt-2 pb-1 border-t border-slate-100 dark:border-slate-700/60">
+              <span class="text-[10px] text-slate-500 block">Código Único de Facturación (CUF):</span>
+              <p class="text-[10px] font-mono break-all text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-900/50 p-1.5 rounded border border-slate-200 dark:border-slate-700">
+                {{ cartStore.lastEmittedInvoice?.cuf || 'CUF-PROCESADO-SIN' }}
+              </p>
             </div>
-            <div class="flex justify-between text-xs pt-2 border-t border-slate-200 dark:border-slate-700">
-              <span class="font-bold text-slate-900 dark:text-white">Total Pagado:</span>
-              <span class="font-extrabold text-slate-900 dark:text-white text-sm">BOB {{ totalFinal.toFixed(2) }}</span>
+
+            <div class="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-700 text-xs">
+              <div>
+                <span class="text-[10px] text-slate-500">IVA (13% Crédito Fiscal):</span>
+                <p class="font-bold text-slate-700 dark:text-slate-300">
+                  BOB {{ (cartStore.lastEmittedInvoice?.monto_iva || (totalFinal * 0.13)).toFixed(2) }}
+                </p>
+              </div>
+              <div class="text-right">
+                <span class="text-[10px] text-slate-500">Total Facturado:</span>
+                <p class="text-sm font-extrabold text-blue-600 dark:text-blue-400">
+                  BOB {{ totalFinal.toFixed(2) }}
+                </p>
+              </div>
+            </div>
+
+            <div v-if="cartStore.lastEmittedInvoice?.codigo_qr" class="pt-2 flex items-center justify-between text-[10px] text-slate-500 bg-blue-50/50 dark:bg-blue-950/20 p-2 rounded-xl">
+              <span class="flex items-center gap-1.5">
+                <QrCode class="w-3.5 h-3.5 text-blue-600" /> Verificación oficial en SIAT
+              </span>
+              <a :href="cartStore.lastEmittedInvoice.codigo_qr" target="_blank" rel="noopener noreferrer" class="font-bold text-blue-600 hover:underline flex items-center gap-1">
+                Consultar QR <ExternalLink class="w-3 h-3" />
+              </a>
             </div>
           </div>
 
-          <div class="pt-4 flex flex-col sm:flex-row justify-center gap-3">
+          <div class="pt-2 flex flex-col sm:flex-row justify-center gap-3">
+            <button
+              @click="imprimirFactura"
+              type="button"
+              class="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs sm:text-sm rounded-xl transition-all flex items-center justify-center gap-2 border border-slate-300 dark:border-slate-600"
+            >
+              <Printer class="w-4 h-4" /> Imprimir Factura
+            </button>
             <button
               @click="handleCerrar"
-              class="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-lg transition-all"
+              class="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-lg transition-all"
             >
               Ver mi pedido en Mi Cuenta
             </button>
@@ -290,12 +373,12 @@ function handleRenovarReserva() {
         <div v-else class="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <!-- Columna Izquierda: Pasos de Entrega y Pago (7 cols) -->
           <div class="lg:col-span-7 space-y-6">
-            <!-- PASO 1: Modalidad de Entrega (RF-15) -->
+            <!-- PASO 1: Modalidad de Entrega -->
             <div class="bg-slate-50 dark:bg-slate-800/40 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
               <div class="flex items-center gap-2">
                 <span class="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">1</span>
                 <h3 class="text-sm font-bold text-slate-900 dark:text-white">
-                  Modalidad de Entrega (RF-15)
+                  Modalidad de Entrega
                 </h3>
               </div>
 
@@ -381,12 +464,12 @@ function handleRenovarReserva() {
               </div>
             </div>
 
-            <!-- PASO 2: Método de Pago (RF-16) -->
+            <!-- PASO 2: Método de Pago -->
             <div class="bg-slate-50 dark:bg-slate-800/40 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
               <div class="flex items-center gap-2">
                 <span class="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">2</span>
                 <h3 class="text-sm font-bold text-slate-900 dark:text-white">
-                  Método de Pago (RF-16)
+                  Método de Pago
                 </h3>
               </div>
 
@@ -487,6 +570,27 @@ function handleRenovarReserva() {
               <div v-else class="p-4 bg-amber-50 dark:bg-amber-950/20 rounded-xl border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300">
                 Serás redirigido a la pasarela externa segura con cifrado TLS 1.3 al hacer clic en Confirmar.
               </div>
+            </div>
+
+            <!-- PASO 3: Factura Legal Electrónica (NIT / CI y Razón Social) -->
+            <div class="bg-slate-50 dark:bg-slate-800/40 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+              <div class="flex items-center gap-2">
+                <span class="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">3</span>
+                <h3 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <FileText class="w-4 h-4 text-blue-600" />
+                  Factura Legal Electrónica (NIT / CI)
+                </h3>
+              </div>
+              <p class="text-[11px] text-slate-500 dark:text-slate-400">
+                Ingresa el NIT o Carnet de Identidad y la Razón Social a cuyo nombre se emitirá la factura oficial timbrada ante el Servicio de Impuestos Nacionales.
+              </p>
+
+              <FiscalBillingForm
+                v-model="fiscalData"
+                :compact="true"
+                context="web"
+                @validation-change="valid => isFiscalValid = valid"
+              />
             </div>
           </div>
 

@@ -13,9 +13,6 @@ import {
   Sparkles, 
   CheckCircle, 
   AlertCircle, 
-  ShieldCheck, 
-  Store, 
-  ShoppingBag,
   ArrowRight,
   Loader2
 } from 'lucide-vue-next';
@@ -68,22 +65,6 @@ function switchTab(tab: 'login' | 'register') {
   loginError.value = '';
   regError.value = '';
   regSuccessMsg.value = '';
-}
-
-// Cuentas Demo de Acceso Rápido (Para evaluación y testing ágil)
-function fillDemoAccount(role: 'admin' | 'cajero' | 'cliente') {
-  authStore.authModalTab = 'login';
-  loginError.value = '';
-  if (role === 'admin') {
-    loginEmail.value = 'admin@maxiconecta.bo';
-    loginPassword.value = 'Admin123!';
-  } else if (role === 'cajero') {
-    loginEmail.value = 'cajero@maxiconecta.bo';
-    loginPassword.value = 'Cajero123!';
-  } else {
-    loginEmail.value = 'cliente@maxiconecta.bo';
-    loginPassword.value = 'Cliente123!';
-  }
 }
 
 // Ejecutar Login con Redirección Inteligente por Rol
@@ -193,7 +174,7 @@ watch(() => authStore.isAuthModalOpen, (open) => {
               <h3 class="font-bold text-slate-900 dark:text-white text-base leading-tight">
                 MaxiConecta Identidad
               </h3>
-              <p class="text-[11px] text-slate-400 font-medium">Autenticación Segura con JWT</p>
+              <p class="text-[11px] text-slate-400 font-medium">Accede a tu cuenta y gestiona tus pedidos</p>
             </div>
           </div>
 
@@ -238,36 +219,6 @@ watch(() => authStore.isAuthModalOpen, (open) => {
       <div class="p-6 overflow-y-auto max-h-[75vh]">
         <!-- ==================== PESTAÑA: INICIAR SESIÓN ==================== -->
         <div v-if="authStore.authModalTab === 'login'" class="space-y-4">
-          <!-- Banner de Cuentas Demo Rápidas -->
-          <div class="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200/70 dark:border-slate-800 space-y-2">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-              Acceso Rápido para Pruebas y Docencia:
-            </span>
-            <div class="grid grid-cols-3 gap-1.5">
-              <button
-                @click="fillDemoAccount('cliente')"
-                class="px-2 py-1.5 bg-white dark:bg-slate-700 hover:bg-blue-50 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-600 flex items-center justify-center gap-1 transition-colors"
-                title="cliente@maxiconecta.bo"
-              >
-                <ShoppingBag class="w-3 h-3 text-blue-500" /> Cliente
-              </button>
-              <button
-                @click="fillDemoAccount('cajero')"
-                class="px-2 py-1.5 bg-white dark:bg-slate-700 hover:bg-emerald-50 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-600 flex items-center justify-center gap-1 transition-colors"
-                title="cajero@maxiconecta.bo (Abre POS)"
-              >
-                <Store class="w-3 h-3 text-emerald-500" /> Cajero POS
-              </button>
-              <button
-                @click="fillDemoAccount('admin')"
-                class="px-2 py-1.5 bg-white dark:bg-slate-700 hover:bg-indigo-50 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-600 flex items-center justify-center gap-1 transition-colors"
-                title="admin@maxiconecta.bo (Abre Admin)"
-              >
-                <ShieldCheck class="w-3 h-3 text-indigo-500" /> Admin
-              </button>
-            </div>
-          </div>
-
           <!-- Alerta de Error -->
           <div 
             v-if="loginError"

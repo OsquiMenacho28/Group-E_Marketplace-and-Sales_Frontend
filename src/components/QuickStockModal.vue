@@ -10,7 +10,15 @@ import { buscarStockMultisucursal, type ProductoStockResumen } from '@/api/catal
  * salir de la pantalla en la que se encuentra (POS, catálogo, etc.).
  */
 const props = defineProps<{ open: boolean }>();
-const emit = defineEmits<{ (e: 'close'): void }>();
+const emit = defineEmits<{ 
+  (e: 'close'): void;
+  (e: 'select', sku: string): void;
+}>();
+
+function seleccionarParaPos(sku: string) {
+  emit('select', sku);
+  cerrar();
+}
 
 const query = ref('');
 const buscando = ref(false);
@@ -133,9 +141,18 @@ watch(
               <p class="text-sm font-semibold text-slate-800 dark:text-slate-100">{{ prod.nombre }}</p>
               <p class="text-[11px] font-mono text-slate-400">SKU: {{ prod.sku }}</p>
             </div>
-            <span class="text-xs font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-2.5 py-1 rounded-lg">
-              {{ prod.stock_total }} unid. totales
-            </span>
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-2.5 py-1 rounded-lg">
+                {{ prod.stock_total }} unid. totales
+              </span>
+              <button 
+                type="button"
+                @click="seleccionarParaPos(prod.sku)"
+                class="px-2.5 py-1 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-sm transition-all active:scale-95"
+              >
+                + Cargar al POS
+              </button>
+            </div>
           </div>
           <table class="w-full text-left text-xs">
             <thead class="text-slate-500 dark:text-slate-400">

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import HasRole from '@/components/HasRole.vue';
 import ProductMultimediaManager from '@/components/ProductMultimediaManager.vue';
+import PriceMatrixManager from '@/components/admin/PriceMatrixManager.vue';
 import { apiClient } from '@/api/client';
 import type { Producto } from '@/types';
 import { 
@@ -33,13 +34,27 @@ import {
   Sparkles,
   Eye,
   Settings2,
-  Layers
+  Layers,
+  Radio,
+  Zap,
+  Clock,
+  Activity,
+  ArrowRight
 } from 'lucide-vue-next';
+import { 
+  obtenerEstadoSincronizacion, 
+  forzarSincronizacionCatalogo, 
+  sincronizarCatalogoDelta,
+  type SyncStatusResponse,
+  type SyncCatalogoResponse
+} from '@/api/catalogo';
 
 interface CategoryNode {
   id: string;
   name: string;
   description: string;
+  padre_id?: string | null;
+  atributos_dinamicos?: string[];
   children?: CategoryNode[];
 }
 
@@ -63,6 +78,9 @@ interface CatalogCategory {
   id: string;
   nombre: string;
   descripcion?: string;
+  padre_id?: string | null;
+  atributos_dinamicos?: string[];
+  activo?: boolean;
 }
 
 interface PendingImage {
@@ -72,7 +90,91 @@ interface PendingImage {
 }
 
 // Control de Pestañas Principales en Admin
-const activeAdminTab = ref<'productos' | 'categorias' | 'kpis'>('productos');
+const activeAdminTab = ref<'productos' | 'categorias' | 'precios' | 'kpis' | 'sincronizacion'>('productos');
+
+// ============================================================================
+// RF-08: SINCRONIZACIÓN MULTICANAL (WEB <-> POS)
+// ============================================================================
+const syncHubStatus = ref<SyncStatusResponse | null>(null);
+const isLoadingSyncStatus = ref(false);
+const isForcingSync = ref(false);
+const deltaTestResult = ref<SyncCatalogoResponse | null>(null);
+const isLoadingDeltaTest = ref(false);
+const simulatedProductId = ref('');
+const simulatedPrice = ref<number>(299.00);
+const isBroadcastingPrice = ref(false);
+
+async function loadSyncStatus() {
+  isLoadingSyncStatus.value = true;
+  try {
+    syncHubStatus.value = await obtenerEstadoSincronizacion();
+    if (!simulatedProductId.value && productsList.value.length > 0) {
+      simulatedProductId.value = productsList.value[0].id;
+      simulatedPrice.value = productsList.value[0].precio ? Number(productsList.value[0].precio) : 299.00;
+    }
+  } catch (err: any) {
+    console.error('Error al obtener estado de sincronización:', err);
+  } finally {
+    isLoadingSyncStatus.value = false;
+  }
+}
+
+async function triggerForceGlobalSync() {
+  isForcingSync.value = true;
+  try {
+    const res = await forzarSincronizacionCatalogo();
+    showFeedback(`¡Sincronización global emitida! ${res.suscriptores_notificados} terminales POS notificadas con ${res.total_productos} productos.`);
+    await loadSyncStatus();
+  } catch (err: any) {
+    showFeedback(err.response?.data?.detail || 'Error al emitir sincronización masiva.', 'error');
+  } finally {
+    isForcingSync.value = false;
+  }
+}
+
+async function runDeltaTest(all = false) {
+  isLoadingDeltaTest.value = true;
+  try {
+    const sinceDate = all ? undefined : new Date(Date.now() - 3600 * 1000 * 24).toISOString();
+    deltaTestResult.value = await sincronizarCatalogoDelta(sinceDate);
+    showFeedback(`Prueba Delta ejecutada: ${deltaTestResult.value.items.length} productos detectados en el lote.`);
+  } catch (err: any) {
+    showFeedback('Error al consultar endpoint delta de sincronización.', 'error');
+  } finally {
+    isLoadingDeltaTest.value = false;
+  }
+}
+
+function onSelectSimulatedProduct(prodId: string) {
+  simulatedProductId.value = prodId;
+  const p = productsList.value.find(item => item.id === prodId);
+  if (p && p.precio) {
+    simulatedPrice.value = Number(p.precio);
+  }
+}
+
+async function applySimulatedPriceAndBroadcast() {
+  if (!simulatedProductId.value) {
+    showFeedback('Selecciona un producto para actualizar su precio.', 'error');
+    return;
+  }
+  isBroadcastingPrice.value = true;
+  try {
+    const targetProd = productsList.value.find(p => p.id === simulatedProductId.value);
+    await apiClient.patch(`/api/v1/catalogo/productos/${simulatedProductId.value}`, {
+      precio: Number(simulatedPrice.value)
+    });
+    if (targetProd) {
+      targetProd.precio = Number(simulatedPrice.value);
+    }
+    showFeedback(`Precio de "${targetProd?.nombre || simulatedProductId.value}" actualizado a BOB ${Number(simulatedPrice.value).toFixed(2)}. Evento SSE transmitido a POS en tiempo real.`);
+    await loadSyncStatus();
+  } catch (err: any) {
+    showFeedback(err.response?.data?.detail || 'Error al actualizar y propagar precio.', 'error');
+  } finally {
+    isBroadcastingPrice.value = false;
+  }
+}
 
 // ============================================================================
 // HISTORIA KAN-17 / RF-01: GESTIÓN DE PRODUCTOS Y CICLO DE VIDA
@@ -153,27 +255,130 @@ async function quickChangeStatus(prod: Producto, nuevoEstado: string) {
   }
 }
 
-// Abrir modal de edición reactiva (KAN-307)
+const editProductAttributeFields = ref<AttributeField[]>([]);
+
+// Opciones de categorías ordenadas con ruta jerárquica padre > hijo
+const hierarchicalCategoryOptions = computed(() => {
+  const map = new Map<string, CatalogCategory>();
+  catalogCategories.value.forEach(c => map.set(c.id, c));
+
+  function getBreadcrumb(cat: CatalogCategory): string {
+    const parts = [cat.nombre];
+    let curr = cat;
+    let depth = 0;
+    while (curr.padre_id && map.has(curr.padre_id) && depth < 5) {
+      curr = map.get(curr.padre_id)!;
+      parts.unshift(curr.nombre);
+      depth++;
+    }
+    return parts.join(' > ');
+  }
+
+  return catalogCategories.value.map(c => ({
+    id: c.id,
+    nombre: c.nombre,
+    breadcrumb: getBreadcrumb(c),
+    atributos_dinamicos: c.atributos_dinamicos || []
+  })).sort((a, b) => a.breadcrumb.localeCompare(b.breadcrumb));
+});
+
+function loadAttributesForEdit(categoryId: string, existingAttributes: Record<string, any> = {}) {
+  const category = catalogCategories.value.find(c => c.id === categoryId);
+  const fields: AttributeField[] = [];
+  const processedLabels = new Set<string>();
+
+  if (category?.atributos_dinamicos && category.atributos_dinamicos.length > 0) {
+    category.atributos_dinamicos.forEach((attr, idx) => {
+      processedLabels.add(attr.toLowerCase());
+      fields.push({
+        id: `edit-dyn-${idx}-${attr}`,
+        label: attr,
+        type: 'text',
+        value: String(existingAttributes[attr] ?? '')
+      });
+    });
+  } else {
+    const templateKey = category?.nombre.toLowerCase().includes('laptop') ? 'laptops'
+      : category?.nombre.toLowerCase().includes('monitor') ? 'monitors'
+      : category?.nombre.toLowerCase().includes('audio') ? 'audio-video'
+      : category?.nombre.toLowerCase().includes('teclado') || category?.nombre.toLowerCase().includes('mouse') ? 'keyboards-mice'
+      : category?.nombre.toLowerCase().includes('red') ? 'networking'
+      : '';
+    const template = attributeTemplates[templateKey] || [];
+    template.forEach(f => {
+      processedLabels.add(f.label.toLowerCase());
+      fields.push({
+        ...f,
+        value: String(existingAttributes[f.label] ?? '')
+      });
+    });
+  }
+
+  Object.entries(existingAttributes).forEach(([key, val]) => {
+    if (!processedLabels.has(key.toLowerCase())) {
+      fields.push({
+        id: `edit-cust-${key}`,
+        label: key,
+        type: 'text',
+        value: String(val ?? ''),
+        custom: true
+      });
+    }
+  });
+
+  editProductAttributeFields.value = fields;
+}
+
+function onEditCategoryChange(newCatId: string) {
+  if (!editingProduct.value) return;
+  editingProduct.value.categoria_id = newCatId;
+  const currentValues = editProductAttributeFields.value.reduce<Record<string, any>>((acc, curr) => {
+    if (curr.label.trim()) acc[curr.label.trim()] = curr.value;
+    return acc;
+  }, {});
+  loadAttributesForEdit(newCatId, currentValues);
+}
+
+function addCustomAttributeToEdit() {
+  editProductAttributeFields.value.push({
+    id: `custom-edit-${Date.now()}`,
+    label: 'Nueva propiedad',
+    type: 'text',
+    value: '',
+    custom: true
+  });
+}
+
+function removeAttributeFromEdit(fieldId: string) {
+  editProductAttributeFields.value = editProductAttributeFields.value.filter(f => f.id !== fieldId);
+}
+
+// Abrir modal de edición reactiva con jerarquía y atributos (KAN-307)
 function openEditModalProduct(prod: Producto) {
   if (catalogCategories.value.length === 0) {
     loadCatalogCategories();
   }
+  const initialCatId = prod.categoria_id || prod.categorias?.id || catalogCategories.value[0]?.id || '';
   editingProduct.value = {
     id: prod.id,
     sku: prod.sku,
     nombre: prod.nombre,
     marca: prod.marca || '',
     descripcion: prod.descripcion || '',
-    categoria_id: prod.categoria_id || catalogCategories.value[0]?.id || '',
+    categoria_id: initialCatId,
     precio: prod.precio || 0,
     precio_costo: (prod as any).precio_costo || Math.round((prod.precio || 0) * 0.7),
     estado: prod.estado || 'publicado'
   };
+
+  const existingAttrs = prod.variantes?.[0]?.atributos || {};
+  loadAttributesForEdit(initialCatId, existingAttrs);
+
   editFormError.value = '';
   isEditModalOpen.value = true;
 }
 
-// Guardar cambios de edición (KAN-306 / KAN-307)
+// Guardar cambios de edición incluyendo categoría jerárquica y atributos
 async function submitEditProduct() {
   if (!editingProduct.value) return;
   if (!editingProduct.value.sku.trim() || !editingProduct.value.nombre.trim()) {
@@ -182,27 +387,26 @@ async function submitEditProduct() {
   }
   isSavingEdit.value = true;
   editFormError.value = '';
+
+  const attributes = editProductAttributeFields.value.reduce<Record<string, string>>((result, field) => {
+    if (field.label.trim()) result[field.label.trim()] = field.value;
+    return result;
+  }, {});
+
   try {
     const res = await apiClient.patch(`/api/v1/catalogo/productos/${editingProduct.value.id}`, {
       nombre: editingProduct.value.nombre.trim(),
       marca: editingProduct.value.marca.trim() || null,
       descripcion: editingProduct.value.descripcion.trim() || null,
+      categoria_id: editingProduct.value.categoria_id || null,
       precio: Number(editingProduct.value.precio) || 0,
-      estado: editingProduct.value.estado
+      estado: editingProduct.value.estado,
+      atributos: attributes
     });
 
-    const updated = res.data.producto || res.data;
-    const index = productsList.value.findIndex(p => p.id === editingProduct.value?.id);
-    if (index !== -1) {
-      productsList.value[index] = {
-        ...productsList.value[index],
-        ...updated,
-        precio: Number(editingProduct.value.precio),
-        precio_costo: Number(editingProduct.value.precio_costo)
-      };
-    }
+    await loadProductsList();
     isEditModalOpen.value = false;
-    showFeedback('Producto actualizado exitosamente.');
+    showFeedback('Producto y jerarquía actualizados exitosamente.');
   } catch (err: any) {
     editFormError.value = err.response?.data?.detail || err.response?.data?.error || 'Error al guardar los cambios del producto.';
   } finally {
@@ -301,33 +505,29 @@ const lowStockAlerts = computed(() => {
     }));
 });
 
-const categories = ref<CategoryNode[]>([
-  {
-    id: '0201bb04-acb2-46fe-8aa9-198a4701ab54',
-    name: 'Laptops y PCs',
-    description: 'Equipos portátiles y de escritorio.'
-  },
-  {
-    id: 'bfeabe38-3626-49e1-9b4e-ace0315cd91d',
-    name: 'Periféricos',
-    description: 'Teclados, mouse y accesorios para estaciones de trabajo.'
-  },
-  {
-    id: 'd1543851-f4d8-4c72-b952-dcf4a777666a',
-    name: 'Monitores',
-    description: 'Pantallas para gaming, diseño y productividad.'
-  },
-  {
-    id: 'd0998a1f-3b78-4099-928a-b05c70ae472b',
-    name: 'Audio y Video',
-    description: 'Auriculares, micrófonos y cámaras de alta fidelidad.'
-  }
-]);
+const categories = ref<CategoryNode[]>([]);
+const expandedCategoryIds = ref(new Set<string>());
 
-const expandedCategoryIds = ref(new Set(['0201bb04-acb2-46fe-8aa9-198a4701ab54', 'bfeabe38-3626-49e1-9b4e-ace0315cd91d']));
+// Estados para Crear Nueva Categoría
+const isCreateCategoryModalOpen = ref(false);
+const isSavingCategory = ref(false);
+const categoryFormError = ref('');
+const newCategoryName = ref('');
+const newCategoryParentId = ref<string>('');
+const newCategoryDescription = ref('');
+const newCategoryAttributeInput = ref('');
+const newCategoryAttributes = ref<string[]>([]);
+
+// Estados para Editar Categoría Existente
+const isEditCategoryModalOpen = ref(false);
+const isUpdatingCategory = ref(false);
+const editCategoryFormError = ref('');
 const editingCategory = ref<CategoryNode | null>(null);
 const editingName = ref('');
 const editingDescription = ref('');
+const editingParentId = ref<string>('');
+const editingAttributeInput = ref('');
+const editingAttributes = ref<string[]>([]);
 const isProductModalOpen = ref(false);
 const selectedProductCategory = ref('');
 const productName = ref('');
@@ -428,30 +628,130 @@ function toggleCategory(categoryId: string) {
   expandedCategoryIds.value = nextExpandedIds;
 }
 
+function buildCategoryTree(rawCategories: CatalogCategory[]): CategoryNode[] {
+  const map = new Map<string, CategoryNode>();
+  const roots: CategoryNode[] = [];
+
+  rawCategories.forEach((cat) => {
+    map.set(cat.id, {
+      id: cat.id,
+      name: cat.nombre,
+      description: cat.descripcion || '',
+      padre_id: cat.padre_id || null,
+      atributos_dinamicos: cat.atributos_dinamicos || [],
+      children: []
+    });
+  });
+
+  rawCategories.forEach((cat) => {
+    const node = map.get(cat.id);
+    if (!node) return;
+    if (cat.padre_id && map.has(cat.padre_id) && cat.padre_id !== cat.id) {
+      map.get(cat.padre_id)!.children!.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+
+  return roots;
+}
+
+function openCreateCategoryModal() {
+  newCategoryName.value = '';
+  newCategoryParentId.value = '';
+  newCategoryDescription.value = '';
+  newCategoryAttributeInput.value = '';
+  newCategoryAttributes.value = [];
+  categoryFormError.value = '';
+  isCreateCategoryModalOpen.value = true;
+}
+
+function addCategoryAttribute() {
+  const val = newCategoryAttributeInput.value.trim();
+  if (val && !newCategoryAttributes.value.includes(val)) {
+    newCategoryAttributes.value.push(val);
+    newCategoryAttributeInput.value = '';
+  }
+}
+
+function removeCategoryAttribute(index: number) {
+  newCategoryAttributes.value.splice(index, 1);
+}
+
+async function saveNewCategory() {
+  if (!newCategoryName.value.trim()) {
+    categoryFormError.value = 'El nombre de la categoría es obligatorio.';
+    return;
+  }
+  isSavingCategory.value = true;
+  categoryFormError.value = '';
+  try {
+    const payload = {
+      nombre: newCategoryName.value.trim(),
+      descripcion: newCategoryDescription.value.trim() || null,
+      padre_id: newCategoryParentId.value ? newCategoryParentId.value : null,
+      atributos_dinamicos: newCategoryAttributes.value
+    };
+    const res = await apiClient.post('/api/v1/catalogo/categorias', payload);
+    await loadCatalogCategories();
+    if (newCategoryParentId.value) {
+      expandedCategoryIds.value.add(newCategoryParentId.value);
+    }
+    isCreateCategoryModalOpen.value = false;
+    showFeedback(`Categoría "${res.data.nombre || newCategoryName.value}" creada con éxito.`);
+  } catch (err: any) {
+    categoryFormError.value = err.response?.data?.detail || 'No se pudo crear la categoría.';
+  } finally {
+    isSavingCategory.value = false;
+  }
+}
+
 function openEditModal(category: CategoryNode) {
   editingCategory.value = category;
   editingName.value = category.name;
   editingDescription.value = category.description;
+  editingParentId.value = category.padre_id || '';
+  editingAttributes.value = [...(category.atributos_dinamicos || [])];
+  editingAttributeInput.value = '';
+  editCategoryFormError.value = '';
+  isEditCategoryModalOpen.value = true;
 }
 
-function findCategory(categoryId: string, nodes: CategoryNode[]): CategoryNode | undefined {
-  for (const category of nodes) {
-    if (category.id === categoryId) return category;
-    if (category.children) {
-      const match = findCategory(categoryId, category.children);
-      if (match) return match;
-    }
+function addEditCategoryAttribute() {
+  const val = editingAttributeInput.value.trim();
+  if (val && !editingAttributes.value.includes(val)) {
+    editingAttributes.value.push(val);
+    editingAttributeInput.value = '';
   }
 }
 
-function saveCategory() {
-  if (!editingCategory.value || !editingName.value.trim()) return;
-  const category = findCategory(editingCategory.value.id, categories.value);
-  if (category) {
-    category.name = editingName.value.trim();
-    category.description = editingDescription.value.trim();
+function removeEditCategoryAttribute(index: number) {
+  editingAttributes.value.splice(index, 1);
+}
+
+async function saveEditedCategory() {
+  if (!editingCategory.value || !editingName.value.trim()) {
+    editCategoryFormError.value = 'El nombre no puede estar vacío.';
+    return;
   }
-  editingCategory.value = null;
+  isUpdatingCategory.value = true;
+  editCategoryFormError.value = '';
+  try {
+    const payload = {
+      nombre: editingName.value.trim(),
+      descripcion: editingDescription.value.trim() || null,
+      padre_id: editingParentId.value ? editingParentId.value : null,
+      atributos_dinamicos: editingAttributes.value
+    };
+    await apiClient.put(`/api/v1/catalogo/categorias/${editingCategory.value.id}`, payload);
+    await loadCatalogCategories();
+    isEditCategoryModalOpen.value = false;
+    showFeedback(`Categoría "${editingName.value}" actualizada con éxito.`);
+  } catch (err: any) {
+    editCategoryFormError.value = err.response?.data?.detail || 'No se pudo actualizar la categoría.';
+  } finally {
+    isUpdatingCategory.value = false;
+  }
 }
 
 // Categorías de respaldo para garantizar disponibilidad inmediata
@@ -467,12 +767,14 @@ async function loadCatalogCategories() {
     const response = await apiClient.get<CatalogCategory[]>('/api/v1/catalogo/categorias');
     const cats = Array.isArray(response.data) ? response.data : [];
     catalogCategories.value = cats.length > 0 ? cats : FALLBACK_CATEGORIES;
+    categories.value = buildCategoryTree(catalogCategories.value);
     if (!selectedProductCategory.value && catalogCategories.value.length > 0) {
       selectedProductCategory.value = catalogCategories.value[0].id;
     }
   } catch (err) {
     console.warn('Aviso cargando categorías de Supabase, usando catálogo base:', err);
     catalogCategories.value = FALLBACK_CATEGORIES;
+    categories.value = buildCategoryTree(FALLBACK_CATEGORIES);
     if (!selectedProductCategory.value && catalogCategories.value.length > 0) {
       selectedProductCategory.value = catalogCategories.value[0].id;
     }
@@ -501,12 +803,26 @@ function openProductModal() {
 function updateProductCategory(categoryId: string) {
   selectedProductCategory.value = categoryId;
   const category = catalogCategories.value.find((item) => item.id === categoryId);
+
+  // Si la categoría tiene atributos dinámicos configurados, utilizarlos prioritariamente
+  if (category?.atributos_dinamicos && category.atributos_dinamicos.length > 0) {
+    productAttributeFields.value = category.atributos_dinamicos.map((attr, idx) => ({
+      id: `dyn-${idx}-${attr}`,
+      label: attr,
+      type: 'text' as const,
+      value: ''
+    }));
+    return;
+  }
+
+  // Plantillas de respaldo por coincidencia de nombre
   const templateKey = category?.nombre.toLowerCase().includes('laptop') ? 'laptops'
     : category?.nombre.toLowerCase().includes('monitor') ? 'monitors'
     : category?.nombre.toLowerCase().includes('audio') ? 'audio-video'
     : category?.nombre.toLowerCase().includes('teclado') || category?.nombre.toLowerCase().includes('mouse') ? 'keyboards-mice'
     : category?.nombre.toLowerCase().includes('red') ? 'networking'
     : '';
+
   productAttributeFields.value = (attributeTemplates[templateKey] || []).map((field) => ({
     ...field,
     value: ''
@@ -747,7 +1063,7 @@ function guardarAsignaciones() {
         ]"
       >
         <Package class="w-4 h-4" />
-        <span>Gestión de Catálogo & Multimedia (RF-01 / RF-03)</span>
+        <span>Gestión de Catálogo & Multimedia</span>
         <span :class="['px-2 py-0.5 rounded-full text-[10px] font-extrabold', activeAdminTab === 'productos' ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200']">
           {{ productsList.length }}
         </span>
@@ -763,7 +1079,20 @@ function guardarAsignaciones() {
         ]"
       >
         <FolderTree class="w-4 h-4" />
-        <span>Categorías & Matriz de Precios</span>
+        <span>Categorías</span>
+      </button>
+
+      <button
+        @click="activeAdminTab = 'precios'"
+        :class="[
+          'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0',
+          activeAdminTab === 'precios'
+            ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+        ]"
+      >
+        <DollarSign class="w-4 h-4" />
+        <span>Listas de Precios & Tarifas (RF-04)</span>
       </button>
 
       <button
@@ -777,6 +1106,20 @@ function guardarAsignaciones() {
       >
         <TrendingUp class="w-4 h-4" />
         <span>KPIs & Operaciones ERP</span>
+      </button>
+
+      <button
+        @click="activeAdminTab = 'sincronizacion'; loadSyncStatus();"
+        :class="[
+          'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0',
+          activeAdminTab === 'sincronizacion'
+            ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+        ]"
+      >
+        <Radio class="w-4 h-4 text-cyan-400" />
+        <span>Sincronización Multicanal (RF-08)</span>
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
       </button>
     </div>
 
@@ -865,7 +1208,7 @@ function guardarAsignaciones() {
           <div>
             <h2 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <Package class="w-4 h-4 text-blue-600" />
-              Catálogo de Productos y Estado de Ciclo de Vida (RF-01)
+              Catálogo de Productos y Estado de Ciclo de Vida
             </h2>
             <p class="text-xs text-slate-500 mt-0.5">Control de SKU único, precios base, galería multimedia y estados de publicación.</p>
           </div>
@@ -1087,9 +1430,21 @@ function guardarAsignaciones() {
               <p class="text-xs text-slate-500 mt-1">Organiza la jerarquía del catálogo y actualiza sus datos.</p>
             </div>
           </div>
-          <span class="text-[11px] font-semibold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 rounded-lg">
-            {{ categories.length }} categorías principales
-          </span>
+          <div class="flex items-center gap-3">
+            <span class="text-[11px] font-semibold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 rounded-lg">
+              {{ categories.length }} categorías principales
+            </span>
+            <HasRole :roles="['administrador', 'gerente_comercial']">
+              <button
+                type="button"
+                @click="openCreateCategoryModal"
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm transition-colors"
+              >
+                <Plus class="w-3.5 h-3.5" />
+                Nueva Categoría
+              </button>
+            </HasRole>
+          </div>
         </div>
 
         <div class="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1119,6 +1474,15 @@ function guardarAsignaciones() {
                 <span v-if="category.hasChildren" class="text-[10px] text-slate-400">{{ category.children?.length }} subcategorías</span>
               </div>
               <p class="text-xs text-slate-500 truncate mt-0.5">{{ category.description }}</p>
+              <div v-if="category.atributos_dinamicos && category.atributos_dinamicos.length > 0" class="flex items-center gap-1.5 flex-wrap mt-1">
+                <span
+                  v-for="attr in category.atributos_dinamicos"
+                  :key="attr"
+                  class="text-[10px] font-semibold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded border border-blue-200/60 dark:border-blue-800/60"
+                >
+                  {{ attr }}
+                </span>
+              </div>
             </div>
 
             <HasRole :roles="['administrador', 'gerente_comercial']">
@@ -1225,6 +1589,13 @@ function guardarAsignaciones() {
     </div>
 
     <!-- ===================================================================== -->
+    <!-- PESTAÑA: LISTAS DE PRECIOS DIFERENCIADAS (RF-04 / US-04)               -->
+    <!-- ===================================================================== -->
+    <div v-if="activeAdminTab === 'precios'" class="space-y-6">
+      <PriceMatrixManager />
+    </div>
+
+    <!-- ===================================================================== -->
     <!-- PESTAÑA 3: KPIS & OPERACIONES ERP                                     -->
     <!-- ===================================================================== -->
     <div v-show="activeAdminTab === 'kpis'" class="space-y-6">
@@ -1277,7 +1648,7 @@ function guardarAsignaciones() {
         <div class="lg:col-span-2 bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <div class="flex justify-between items-center">
             <h3 class="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
-              <FileText class="w-4 h-4 text-blue-500" /> Órdenes y Ventas Recientes (RF-27 al RF-37)
+              <FileText class="w-4 h-4 text-blue-500" /> Órdenes y Ventas Recientes
             </h3>
             <router-link to="/admin" class="text-xs text-blue-600 hover:underline font-semibold">Ver todas</router-link>
           </div>
@@ -1318,7 +1689,7 @@ function guardarAsignaciones() {
         <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <div class="flex items-center gap-2 text-rose-600 font-bold text-sm">
             <AlertTriangle class="w-4 h-4" />
-            <span>Alertas de Quiebre de Stock (RF-42)</span>
+            <span>Alertas de Quiebre de Stock</span>
           </div>
           <p class="text-xs text-slate-400">Productos que alcanzaron el punto de reorden para Compras:</p>
 
@@ -1348,66 +1719,531 @@ function guardarAsignaciones() {
       </div>
     </div>
 
-    <!-- Modal de Edición de Categoría -->
+    <!-- ===================================================================== -->
+    <!-- PESTAÑA: SINCRONIZACIÓN MULTICANAL WEB <-> POS (RF-08)                 -->
+    <!-- ===================================================================== -->
+    <div v-show="activeAdminTab === 'sincronizacion'" class="space-y-6">
+      <!-- Tarjetas de Estado del Hub de Sincronización (RF-08) -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- Tarjeta 1: Canal SSE -->
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+          <div class="flex justify-between items-center text-slate-500">
+            <span class="text-xs font-semibold">Canal SSE en Tiempo Real</span>
+            <span class="p-2 bg-cyan-50 dark:bg-cyan-950/40 text-cyan-600 dark:text-cyan-400 rounded-lg">
+              <Radio class="w-4 h-4 animate-pulse" />
+            </span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
+            <span class="text-lg font-bold text-slate-900 dark:text-white">
+              {{ syncHubStatus?.suscriptores_activos ?? 0 }} POS Conectados
+            </span>
+          </div>
+          <p class="text-[11px] text-slate-500">
+            Streaming activo en <code class="text-cyan-600 dark:text-cyan-400 font-mono">/api/v1/catalogo/sync-events</code>
+          </p>
+        </div>
+
+        <!-- Tarjeta 2: Total Productos Catálogo -->
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+          <div class="flex justify-between items-center text-slate-500">
+            <span class="text-xs font-semibold">Productos en Catálogo</span>
+            <span class="p-2 bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 rounded-lg">
+              <Package class="w-4 h-4" />
+            </span>
+          </div>
+          <div class="text-2xl font-black text-slate-900 dark:text-white">
+            {{ syncHubStatus?.total_productos ?? productsList.length }} SKUs
+          </div>
+          <p class="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+            <CheckCircle2 class="w-3.5 h-3.5" /> Consistencia omnicanal asegurada
+          </p>
+        </div>
+
+        <!-- Tarjeta 3: Marca Temporal Delta -->
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+          <div class="flex justify-between items-center text-slate-500">
+            <span class="text-xs font-semibold">Última Mutación Delta</span>
+            <span class="p-2 bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 rounded-lg">
+              <Clock class="w-4 h-4" />
+            </span>
+          </div>
+          <div class="text-xs font-mono font-bold text-slate-800 dark:text-slate-200 truncate" :title="syncHubStatus?.ultima_sincronizacion || 'Sin registro'">
+            {{ syncHubStatus?.ultima_sincronizacion ? new Date(syncHubStatus.ultima_sincronizacion).toLocaleString('es-BO') : 'Sincronizado' }}
+          </div>
+          <p class="text-[11px] text-slate-400">
+            Filtro diferencial por <code class="text-purple-600 dark:text-purple-400 font-mono">updated_at</code>
+          </p>
+        </div>
+
+        <!-- Tarjeta 4: Estado Operativo -->
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+          <div class="flex justify-between items-center text-slate-500">
+            <span class="text-xs font-semibold">Estado del Hub</span>
+            <span class="p-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 rounded-lg">
+              <Activity class="w-4 h-4" />
+            </span>
+          </div>
+          <div class="text-lg font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide">
+            {{ syncHubStatus?.estado ?? 'Operativo' }}
+          </div>
+          <p class="text-[11px] text-slate-500">
+            Gateway proxy SSE sin bufferización
+          </p>
+        </div>
+      </div>
+
+      <!-- Panel de Acciones y Simulador -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Control Global & Disparo Masivo -->
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div class="flex items-center gap-2.5">
+              <span class="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400">
+                <Zap class="w-4 h-4" />
+              </span>
+              <div>
+                <h3 class="text-sm font-bold text-slate-900 dark:text-white">Control Global de Sincronización</h3>
+                <p class="text-xs text-slate-500">Emite órdenes de recarga o consulta lotes delta</p>
+              </div>
+            </div>
+            <button
+              @click="loadSyncStatus"
+              :disabled="isLoadingSyncStatus"
+              class="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg"
+              title="Refrescar estado"
+            >
+              <RefreshCw :class="['w-4 h-4', isLoadingSyncStatus ? 'animate-spin' : '']" />
+            </button>
+          </div>
+
+          <div class="space-y-3">
+            <p class="text-xs text-slate-600 dark:text-slate-300">
+              Al emitir una <strong>Sincronización Global</strong>, el microservicio envía un broadcast SSE inmediato a todas las terminales POS conectadas, forzando la hidratación de precios y catálogo sin reiniciar sesión.
+            </p>
+
+            <div class="flex flex-wrap gap-3 pt-2">
+              <button
+                type="button"
+                @click="triggerForceGlobalSync"
+                :disabled="isForcingSync"
+                class="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-bold shadow-md shadow-blue-500/20 transition-all flex items-center gap-2 cursor-pointer"
+              >
+                <RefreshCw :class="['w-4 h-4', isForcingSync ? 'animate-spin' : '']" />
+                <span>{{ isForcingSync ? 'Transmitiendo a POS...' : 'Forzar Sincronización a POS' }}</span>
+              </button>
+
+              <button
+                type="button"
+                @click="runDeltaTest(false)"
+                :disabled="isLoadingDeltaTest"
+                class="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer"
+              >
+                <Layers class="w-4 h-4" />
+                <span>{{ isLoadingDeltaTest ? 'Consultando Delta...' : 'Inspeccionar Delta (/sync-catalogo)' }}</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Resultado del Test Delta si se ejecutó -->
+          <div v-if="deltaTestResult" class="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs space-y-1.5 font-mono">
+            <div class="flex justify-between text-slate-600 dark:text-slate-300 font-bold">
+              <span>Respuesta Delta: {{ deltaTestResult.items.length }} ítems</span>
+              <span>Servidor: {{ new Date(deltaTestResult.servidor_timestamp).toLocaleTimeString() }}</span>
+            </div>
+            <div class="max-h-28 overflow-y-auto space-y-1 text-[11px] text-slate-500">
+              <div v-for="item in deltaTestResult.items.slice(0, 5)" :key="item.id" class="flex justify-between">
+                <span>{{ item.sku }} - {{ item.nombre }}</span>
+                <span class="font-bold text-slate-700 dark:text-slate-200">BOB {{ item.precio_referencia }} [{{ item.accion }}]</span>
+              </div>
+              <div v-if="deltaTestResult.items.length > 5" class="text-center text-[10px] text-blue-500">
+                + {{ deltaTestResult.items.length - 5 }} ítems adicionales en el lote...
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Simulador Interactivo: Cambio de Precio Reactivo Web -> POS -->
+        <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+          <div class="flex items-center gap-2.5 border-b border-slate-100 dark:border-slate-800 pb-3">
+            <span class="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400">
+              <DollarSign class="w-4 h-4" />
+            </span>
+            <div>
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">Simulador de Propagación Web &rarr; POS</h3>
+              <p class="text-xs text-slate-500">Modifica un precio administrativo y observa la emisión SSE</p>
+            </div>
+          </div>
+
+          <form @submit.prevent="applySimulatedPriceAndBroadcast" class="space-y-3.5">
+            <div>
+              <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                Seleccionar Producto del Catálogo:
+              </label>
+              <select
+                :value="simulatedProductId"
+                @change="onSelectSimulatedProduct(($event.target as HTMLSelectElement).value)"
+                class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500"
+              >
+                <option v-for="p in productsList" :key="p.id" :value="p.id">
+                  {{ p.sku }} — {{ p.nombre }} (Actual: BOB {{ p.precio ?? 0 }})
+                </option>
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                Nuevo Precio de Venta (BOB):
+              </label>
+              <div class="relative">
+                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 font-bold">BOB</span>
+                <input
+                  v-model.number="simulatedPrice"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  required
+                  class="w-full pl-12 pr-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 font-bold text-slate-900 dark:text-white"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              :disabled="isBroadcastingPrice"
+              class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white text-xs font-bold shadow-md shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Zap :class="['w-4 h-4', isBroadcastingPrice ? 'animate-bounce' : '']" />
+              <span>{{ isBroadcastingPrice ? 'Propagando a POS...' : 'Propagar Precio a POS en Tiempo Real' }}</span>
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Feed / Log de Eventos de Sincronización en Tiempo Real -->
+      <div class="bg-white dark:bg-slate-900 p-5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+        <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+          <div class="flex items-center gap-2">
+            <Radio class="w-4 h-4 text-cyan-500" />
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white">Auditoría de Eventos de Sincronización Multicanal</h3>
+          </div>
+          <span class="text-xs text-slate-400">
+            {{ syncHubStatus?.eventos_recientes.length ?? 0 }} eventos registrados en el ring buffer
+          </span>
+        </div>
+
+        <div v-if="!syncHubStatus || syncHubStatus.eventos_recientes.length === 0" class="py-8 text-center text-xs text-slate-400">
+          No hay eventos recientes en el buffer. Modifica un producto o pulsa "Forzar Sincronización a POS" para generar eventos.
+        </div>
+
+        <div v-else class="divide-y divide-slate-100 dark:divide-slate-800">
+          <div
+            v-for="(ev, idx) in syncHubStatus.eventos_recientes"
+            :key="idx"
+            class="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+          >
+            <div class="flex items-center gap-2.5">
+              <span
+                :class="[
+                  'px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider',
+                  ev.tipo === 'producto_creado'
+                    ? 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
+                    : ev.tipo === 'producto_actualizado'
+                    ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                    : ev.tipo === 'sincronizacion_masiva'
+                    ? 'bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300'
+                    : 'bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300'
+                ]"
+              >
+                {{ ev.tipo }}
+              </span>
+              <span class="font-bold text-slate-800 dark:text-slate-100">
+                {{ ev.nombre || ev.mensaje || ev.sku || 'Evento Multicanal' }}
+              </span>
+              <span v-if="ev.sku" class="text-slate-400 font-mono text-[11px]">
+                [{{ ev.sku }}]
+              </span>
+              <span v-if="ev.precio !== undefined" class="text-emerald-600 font-bold">
+                BOB {{ ev.precio }}
+              </span>
+            </div>
+
+            <div class="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
+              <Clock class="w-3.5 h-3.5 text-slate-400" />
+              <span>{{ new Date(ev.emitido_en).toLocaleTimeString('es-BO') }}</span>
+              <span class="text-[10px] text-slate-500 hidden sm:inline">({{ new Date(ev.emitido_en).toLocaleDateString('es-BO') }})</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal de Creación de Categoría -->
     <div
-      v-if="editingCategory"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm p-4"
+      v-if="isCreateCategoryModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4 overflow-y-auto"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="category-modal-title"
-      @click.self="editingCategory = null"
+      @click.self="isCreateCategoryModalOpen = false"
     >
-      <div class="w-full max-w-lg bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700">
-        <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <div>
-            <h2 id="category-modal-title" class="text-base font-bold text-slate-900 dark:text-white">Editar categoría</h2>
-            <p class="text-xs text-slate-500 mt-1">Actualiza la información visible en el catálogo.</p>
+      <div class="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden my-8">
+        <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/40">
+          <div class="flex items-center gap-3">
+            <span class="p-2 rounded-xl bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-400">
+              <FolderTree class="w-5 h-5" />
+            </span>
+            <div>
+              <h2 class="text-base font-extrabold text-slate-900 dark:text-white">Nueva Categoría</h2>
+              <p class="text-xs text-slate-500">Estructura jerárquica y atributos dinámicos</p>
+            </div>
           </div>
           <button
             type="button"
-            class="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
-            aria-label="Cerrar modal"
-            @click="editingCategory = null"
+            class="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-700/60 transition-colors"
+            @click="isCreateCategoryModalOpen = false"
           >
             <X class="w-4 h-4" />
           </button>
         </div>
 
-        <form class="p-5 space-y-4" @submit.prevent="saveCategory">
-          <label class="block space-y-1.5">
-            <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Nombre</span>
+        <form class="p-6 space-y-4" @submit.prevent="saveNewCategory">
+          <div v-if="categoryFormError" class="p-3 text-xs bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900 text-rose-600 rounded-xl font-medium">
+            {{ categoryFormError }}
+          </div>
+
+          <!-- Nombre -->
+          <div class="space-y-1.5">
+            <label class="text-xs font-bold text-slate-700 dark:text-slate-300">
+              Nombre de la Categoría <span class="text-rose-500">*</span>
+            </label>
             <input
-              v-model="editingName"
+              v-model="newCategoryName"
               type="text"
+              placeholder="Ej. Componentes, Tarjetas Gráficas, Audio..."
               required
-              autofocus
-              class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+              class="w-full px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
             />
-          </label>
+          </div>
 
-          <label class="block space-y-1.5">
-            <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">Descripción</span>
+          <!-- Categoría Padre (Jerarquía Recursiva) -->
+          <div class="space-y-1.5">
+            <label class="text-xs font-bold text-slate-700 dark:text-slate-300">
+              Categoría Superior / Padre
+            </label>
+            <select
+              v-model="newCategoryParentId"
+              class="w-full px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+            >
+              <option value="">(Ninguna - Categoría Principal Raíz)</option>
+              <option
+                v-for="cat in catalogCategories"
+                :key="cat.id"
+                :value="cat.id"
+              >
+                {{ cat.nombre }}
+              </option>
+            </select>
+            <p class="text-[11px] text-slate-400">Si seleccionas una categoría superior, esta pasará a ser una subcategoría anidada.</p>
+          </div>
+
+          <!-- Descripción -->
+          <div class="space-y-1.5">
+            <label class="text-xs font-bold text-slate-700 dark:text-slate-300">Descripción</label>
             <textarea
-              v-model="editingDescription"
-              rows="3"
-              class="w-full px-3 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none"
+              v-model="newCategoryDescription"
+              rows="2"
+              placeholder="Breve reseña del tipo de productos comprendidos..."
+              class="w-full px-3.5 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none"
             />
-          </label>
+          </div>
 
-          <div class="flex justify-end gap-2 pt-2">
+          <!-- Atributos Dinámicos -->
+          <div class="space-y-2 pt-1 border-t border-slate-100 dark:border-slate-800">
+            <label class="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+              <span>Atributos Dinámicos Recomendados</span>
+              <span class="text-[10px] font-normal text-slate-400">Campos técnicos que solicitará al crear productos</span>
+            </label>
+            
+            <div class="flex gap-2">
+              <input
+                v-model="newCategoryAttributeInput"
+                type="text"
+                placeholder="Ej. RAM, Socket, Watts, Pulgadas, Color..."
+                class="flex-1 px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:border-blue-500 outline-none"
+                @keydown.enter.prevent="addCategoryAttribute"
+              />
+              <button
+                type="button"
+                @click="addCategoryAttribute"
+                class="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 rounded-xl transition-colors"
+              >
+                + Añadir
+              </button>
+            </div>
+
+            <!-- Chips de Atributos -->
+            <div v-if="newCategoryAttributes.length > 0" class="flex flex-wrap gap-1.5 pt-1">
+              <span
+                v-for="(attr, idx) in newCategoryAttributes"
+                :key="attr"
+                class="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200/60 dark:border-blue-800/60 rounded-lg"
+              >
+                {{ attr }}
+                <button
+                  type="button"
+                  @click="removeCategoryAttribute(idx)"
+                  class="text-blue-500 hover:text-rose-600 ml-0.5"
+                >
+                  <X class="w-3 h-3" />
+                </button>
+              </span>
+            </div>
+            <p v-else class="text-[11px] text-slate-400 italic">No hay atributos específicos agregados (opcional).</p>
+          </div>
+
+          <div class="flex justify-end gap-2.5 pt-4 border-t border-slate-100 dark:border-slate-800">
             <button
               type="button"
-              class="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
-              @click="editingCategory = null"
+              class="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              @click="isCreateCategoryModalOpen = false"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm"
+              :disabled="isSavingCategory"
+              class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm transition-colors disabled:opacity-50"
             >
               <Save class="w-3.5 h-3.5" />
-              Guardar cambios
+              {{ isSavingCategory ? 'Creando...' : 'Crear Categoría' }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal de Edición de Categoría -->
+    <div
+      v-if="isEditCategoryModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4 overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+      @click.self="isEditCategoryModalOpen = false"
+    >
+      <div class="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden my-8">
+        <div class="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/40">
+          <div>
+            <h2 class="text-base font-extrabold text-slate-900 dark:text-white">Editar Categoría</h2>
+            <p class="text-xs text-slate-500">Actualiza jerarquía y atributos de tipificación</p>
+          </div>
+          <button
+            type="button"
+            class="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-700/60 transition-colors"
+            @click="isEditCategoryModalOpen = false"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <form class="p-6 space-y-4" @submit.prevent="saveEditedCategory">
+          <div v-if="editCategoryFormError" class="p-3 text-xs bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900 text-rose-600 rounded-xl font-medium">
+            {{ editCategoryFormError }}
+          </div>
+
+          <div class="space-y-1.5">
+            <label class="text-xs font-bold text-slate-700 dark:text-slate-300">Nombre de la Categoría</label>
+            <input
+              v-model="editingName"
+              type="text"
+              required
+              class="w-full px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+            />
+          </div>
+
+          <div class="space-y-1.5">
+            <label class="text-xs font-bold text-slate-700 dark:text-slate-300">Categoría Superior / Padre</label>
+            <select
+              v-model="editingParentId"
+              class="w-full px-3.5 py-2.5 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
+            >
+              <option value="">(Ninguna - Categoría Principal Raíz)</option>
+              <option
+                v-for="cat in catalogCategories.filter(c => c.id !== editingCategory?.id)"
+                :key="cat.id"
+                :value="cat.id"
+              >
+                {{ cat.nombre }}
+              </option>
+            </select>
+          </div>
+
+          <div class="space-y-1.5">
+            <label class="text-xs font-bold text-slate-700 dark:text-slate-300">Descripción</label>
+            <textarea
+              v-model="editingDescription"
+              rows="2"
+              class="w-full px-3.5 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none"
+            />
+          </div>
+
+          <!-- Atributos Dinámicos -->
+          <div class="space-y-2 pt-1 border-t border-slate-100 dark:border-slate-800">
+            <label class="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+              <span>Atributos Dinámicos Recomendados</span>
+              <span class="text-[10px] font-normal text-slate-400">Especificaciones técnicas de variantes</span>
+            </label>
+            
+            <div class="flex gap-2">
+              <input
+                v-model="editingAttributeInput"
+                type="text"
+                placeholder="Ej. RAM, Procesador, Watts..."
+                class="flex-1 px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl focus:border-blue-500 outline-none"
+                @keydown.enter.prevent="addEditCategoryAttribute"
+              />
+              <button
+                type="button"
+                @click="addEditCategoryAttribute"
+                class="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 rounded-xl transition-colors"
+              >
+                + Añadir
+              </button>
+            </div>
+
+            <div v-if="editingAttributes.length > 0" class="flex flex-wrap gap-1.5 pt-1">
+              <span
+                v-for="(attr, idx) in editingAttributes"
+                :key="attr"
+                class="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200/60 dark:border-blue-800/60 rounded-lg"
+              >
+                {{ attr }}
+                <button
+                  type="button"
+                  @click="removeEditCategoryAttribute(idx)"
+                  class="text-blue-500 hover:text-rose-600 ml-0.5"
+                >
+                  <X class="w-3 h-3" />
+                </button>
+              </span>
+            </div>
+            <p v-else class="text-[11px] text-slate-400 italic">No hay atributos específicos agregados.</p>
+          </div>
+
+          <div class="flex justify-end gap-2.5 pt-4 border-t border-slate-100 dark:border-slate-800">
+            <button
+              type="button"
+              class="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              @click="isEditCategoryModalOpen = false"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              :disabled="isUpdatingCategory"
+              class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-sm transition-colors disabled:opacity-50"
+            >
+              <Save class="w-3.5 h-3.5" />
+              {{ isUpdatingCategory ? 'Guardando...' : 'Guardar Cambios' }}
             </button>
           </div>
         </form>
@@ -1579,7 +2415,7 @@ function guardarAsignaciones() {
           <div>
             <h3 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <Edit3 class="w-4 h-4 text-blue-600" />
-              Editar Producto (RF-01 / KAN-307)
+              Editar Producto
             </h3>
             <p class="text-xs text-slate-500 mt-0.5">Actualiza las características, precio y estado del ciclo de vida.</p>
           </div>
@@ -1617,11 +2453,24 @@ function guardarAsignaciones() {
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Categoría</label>
-              <select v-model="editingProduct.categoria_id" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500">
+              <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                Categoría (Ubicación en la Jerarquía)
+              </label>
+              <select
+                :value="editingProduct.categoria_id"
+                @change="onEditCategoryChange(($event.target as HTMLSelectElement).value)"
+                class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 font-medium"
+              >
                 <option value="">Sin categoría asignada</option>
-                <option v-for="cat in catalogCategories" :key="cat.id" :value="cat.id">{{ cat.nombre }}</option>
+                <option
+                  v-for="cat in hierarchicalCategoryOptions"
+                  :key="cat.id"
+                  :value="cat.id"
+                >
+                  {{ cat.breadcrumb }}
+                </option>
               </select>
+              <p class="text-[10px] text-slate-400 mt-0.5">Al cambiar de categoría se cargarán sus atributos técnicos correspondientes.</p>
             </div>
             <div>
               <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Estado de Ciclo de Vida</label>
@@ -1636,7 +2485,78 @@ function guardarAsignaciones() {
 
           <div>
             <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">Descripción</label>
-            <textarea v-model="editingProduct.descripcion" rows="3" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 resize-none"></textarea>
+            <textarea v-model="editingProduct.descripcion" rows="2" class="w-full px-3 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 resize-none"></textarea>
+          </div>
+
+          <!-- Atributos Dinámicos de la Jerarquía -->
+          <div class="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+            <div class="p-3 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800">
+              <div>
+                <h4 class="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                  <SlidersHorizontal class="w-3.5 h-3.5 text-blue-600" />
+                  Atributos Dinámicos de la Jerarquía
+                </h4>
+                <p class="text-[10px] text-slate-500 mt-0.5">Especificaciones técnicas y propiedades de la variante.</p>
+              </div>
+              <button
+                type="button"
+                @click="addCustomAttributeToEdit"
+                class="px-2.5 py-1 text-[11px] font-bold text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg hover:border-blue-400 transition-colors"
+              >
+                + Añadir propiedad
+              </button>
+            </div>
+
+            <div class="p-3.5 space-y-2.5">
+              <div v-if="editProductAttributeFields.length === 0" class="text-center py-3 text-xs text-slate-400">
+                Esta categoría no tiene atributos dinámicos configurados. Puedes añadir propiedades personalizadas con el botón de arriba.
+              </div>
+              <div
+                v-for="field in editProductAttributeFields"
+                :key="field.id"
+                class="grid grid-cols-1 sm:grid-cols-[140px_1fr_auto] gap-2 items-center"
+              >
+                <div>
+                  <input
+                    v-if="field.custom"
+                    v-model="field.label"
+                    type="text"
+                    placeholder="Nombre del atributo"
+                    class="w-full px-2.5 py-1.5 text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500"
+                  />
+                  <span v-else class="text-xs font-semibold text-slate-700 dark:text-slate-300 block truncate" :title="field.label">
+                    {{ field.label }}
+                  </span>
+                </div>
+
+                <div class="flex-1">
+                  <select
+                    v-if="field.options && field.options.length > 0"
+                    v-model="field.value"
+                    class="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500"
+                  >
+                    <option value="">Selecciona una opción</option>
+                    <option v-for="opt in field.options" :key="opt" :value="opt">{{ opt }}</option>
+                  </select>
+                  <input
+                    v-else
+                    v-model="field.value"
+                    :type="field.type === 'number' ? 'number' : 'text'"
+                    :placeholder="`Valor para ${field.label}`"
+                    class="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  @click="removeAttributeFromEdit(field.id)"
+                  class="p-1 text-slate-400 hover:text-rose-600 transition-colors"
+                  title="Quitar atributo"
+                >
+                  <X class="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
           </div>
 
           <div v-if="editFormError" class="p-2.5 rounded-lg bg-rose-50 text-rose-600 border border-rose-200 text-xs font-medium">
@@ -1699,13 +2619,7 @@ function guardarAsignaciones() {
             </p>
           </div>
 
-          <span
-            class="px-2.5 py-1 rounded-full text-[10px] font-bold
-                  bg-blue-50 text-blue-700
-                  dark:bg-blue-950/40 dark:text-blue-300"
-          >
-            KAN-298
-          </span>
+          
         </div>
 
         <div class="overflow-x-auto">

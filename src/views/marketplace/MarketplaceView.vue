@@ -5,6 +5,7 @@ import { useCartStore } from '@/stores/cart';
 import { apiClient } from '@/api/client';
 import type { FacetasCatalogo, SugerenciaItem, MarketplaceProduct } from '@/types';
 import { useWishlistStore } from '@/stores/wishlist';
+import { useAuthStore } from '@/stores/auth';
 import { Sparkles, ShieldCheck, Search, RotateCcw } from 'lucide-vue-next';
 
 // Subcomponentes modulares
@@ -17,6 +18,7 @@ const route = useRoute();
 const router = useRouter();
 const cartStore = useCartStore();
 const wishlistStore = useWishlistStore();
+const authStore = useAuthStore();
 
 // -----------------------------------------------------------------------------
 // ESTADO DE BÚSQUEDA Y FILTROS FACETADOS (RF-06 / US-06)
@@ -179,10 +181,15 @@ function mapDbProductToMarketplace(dbp: any): MarketplaceProduct {
   const cover = gallery.find((i: any) => i.es_principal) || gallery[0];
   const realPrice = Number(dbp.precio || 0);
 
+  const rawVariants = Array.isArray(dbp.variantes) ? dbp.variantes : [];
+  const firstVariant = rawVariants.length > 0 ? rawVariants[0] : null;
+  const atributos = firstVariant?.atributos || dbp.atributos || {};
+
   return {
     id: dbp.id,
     sku: dbp.sku,
     nombre: dbp.nombre,
+    descripcion: dbp.descripcion || '',
     categoria: dbp.categorias?.nombre || 'General',
     categoria_id: dbp.categoria_id,
     marca: dbp.marca || 'MaxiConecta',
@@ -191,7 +198,15 @@ function mapDbProductToMarketplace(dbp: any): MarketplaceProduct {
     stock: dbp.stock ?? 10,
     badge: realPrice > 8000 ? 'Pro' : (dbp.stock < 5 ? 'Pocas unidades' : 'Disponible'),
     image: cover?.url || (dbp.imagenes && dbp.imagenes[0]) || 'https://images.unsplash.com/photo-1526738549149-8e07eca6c147?auto=format&fit=crop&w=600&q=80',
-    galleryImages: gallery
+    galleryImages: gallery,
+    atributos: atributos,
+    variantes: rawVariants.map((v: any) => ({
+      id: v.id,
+      sku: v.sku,
+      nombre_variante: v.nombre_variante,
+      atributos: v.atributos || {},
+      precio: Number(v.precio || realPrice)
+    }))
   };
 }
 
@@ -613,12 +628,14 @@ function agregarAlCarrito(prod: MarketplaceProduct) {
 }
 
 function alternarDeseo(prod: MarketplaceProduct) {
-  const yaEsta = wishlistStore.estaEnDeseos(prod.id);
-  if (yaEsta) {
-    wishlistStore.eliminarDeseo('demo-client', prod.id);
-  } else {
-    wishlistStore.agregarDeseo('demo-client', prod.id);
-  }
+  wishlistStore.alternarDeseo({
+    id: prod.id,
+    sku: prod.sku,
+    nombre: prod.nombre,
+    precio: prod.precio,
+    image: prod.image,
+    variante_id: prod.id
+  }, authStore.user?.id);
 }
 </script>
 
@@ -630,13 +647,13 @@ function alternarDeseo(prod: MarketplaceProduct) {
       <div class="relative z-10 grid grid-cols-1 lg:grid-cols-[1.4fr_0.6fr] gap-8 items-end">
         <div class="max-w-2xl space-y-4">
           <span class="inline-flex items-center gap-1.5 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold tracking-wide text-teal-900 backdrop-blur-md border border-teal-200 shadow-sm">
-            <Sparkles class="w-3.5 h-3.5 text-amber-600" /> Búsqueda de Catálogo Facetada (RF-06)
+            <Sparkles class="w-3.5 h-3.5 text-amber-600" /> Catálogo de Productos
           </span>
           <h1 class="display-font text-3xl sm:text-4xl md:text-5xl font-black leading-tight tracking-tight text-slate-900">
             Encuentra exactamente lo que buscas.
           </h1>
           <p class="max-w-xl text-slate-700 text-sm sm:text-base leading-relaxed">
-            Búsqueda por texto completo con filtros acumulativos por categoría, marca, precio y disponibilidad en tiempo real.
+            Explora una amplia selección de productos con disponibilidad en tiempo real y los mejores precios.
           </p>
         </div>
         <div class="grid grid-cols-2 gap-3 max-w-sm lg:justify-self-end">
@@ -650,7 +667,7 @@ function alternarDeseo(prod: MarketplaceProduct) {
           </div>
           <div class="col-span-2 rounded-xl bg-slate-900/90 p-3.5 border border-slate-800 flex items-center gap-3 shadow-md">
             <ShieldCheck class="w-8 h-8 text-teal-300 shrink-0" />
-            <p class="text-xs leading-snug text-slate-200">Filtros acumulativos con recuento dinámico y FTS insensible a tildes.</p>
+            <p class="text-xs leading-snug text-slate-200">Búsqueda inteligente y filtros instantáneos para encontrar lo que necesitas.</p>
           </div>
         </div>
       </div>
@@ -766,7 +783,7 @@ function alternarDeseo(prod: MarketplaceProduct) {
                 </div>
                 <div>
                   <h3 class="text-sm font-extrabold text-slate-900 dark:text-white uppercase tracking-wider">
-                    Productos Recomendados para ti (RF-19)
+                    Productos Recomendados para ti
                   </h3>
                   <p class="text-[11px] text-slate-400">Artículos populares y afines disponibles para entrega inmediata</p>
                 </div>

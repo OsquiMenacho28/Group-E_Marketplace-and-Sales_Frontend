@@ -53,7 +53,7 @@ function handleQuickPrice(min: number | null, max: number | null) {
     <div class="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
       <div class="flex items-center gap-2 text-slate-900 dark:text-white font-extrabold text-sm">
         <Filter class="w-4 h-4 text-teal-600" />
-        <span>Filtros Facetados</span>
+        <span>Filtrar Productos</span>
       </div>
       <button
         v-if="isMobileOpen"

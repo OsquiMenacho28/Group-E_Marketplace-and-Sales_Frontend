@@ -48,6 +48,7 @@ export interface Producto {
   precio?: number;
   precio_costo?: number;
   variante_id?: string;
+  stock?: number;
 }
 
 export interface ItemCarrito {
@@ -119,9 +120,13 @@ export interface OrderSummary {
 
 export interface WishlistItem {
   id: string;
-  cliente_id: string;
+  cliente_id?: string;
   variante_id: string;
   created_at: string;
+  sku?: string;
+  nombre?: string;
+  precio?: number;
+  imagen_url?: string;
 }
 
 // ============================================================================
@@ -208,6 +213,7 @@ export interface CheckoutPayload {
   direccion_entrega?: string;
   costo_envio: number;
   notas?: string;
+  datos_fiscales?: DatosFiscales;
 }
 
 // -----------------------------------------------------------------------------
@@ -256,6 +262,7 @@ export interface MarketplaceProduct {
   id: string;
   sku: string;
   nombre: string;
+  descripcion?: string;
   categoria: string;
   categoria_id?: string;
   marca?: string;
@@ -265,5 +272,49 @@ export interface MarketplaceProduct {
   badge: string;
   image: string;
   galleryImages: Array<{ id: string; url: string; es_principal: boolean; orden: number }>;
+  atributos?: Record<string, any>;
+  variantes?: Array<{ id: string; sku: string; nombre_variante: string; atributos: Record<string, any>; precio: number }>;
 }
+
+// ============================================================================
+// HISTORIA US-04 / RF-04: LISTAS DE PRECIOS DIFERENCIADAS Y TARIFAS
+// ============================================================================
+export interface PrecioItem {
+  id: string;
+  lista_precio_id: string;
+  variante_id: string;
+  sku?: string;
+  nombre?: string;
+  precio: number;
+  fecha_inicio?: string;
+  fecha_fin?: string;
+}
+
+export interface ListaPrecio {
+  id: string;
+  nombre: string;
+  canal: 'web' | 'pos' | 'b2b';
+  tipo_cliente: 'retail' | 'corporativo_b2b';
+  sucursal_id?: string | null;
+  sucursal_nombre?: string | null;
+  moneda: 'BOB' | 'USD';
+  activo: boolean;
+  total_items?: number;
+  items?: PrecioItem[];
+  created_at?: string;
+}
+
+export interface PrecioResolucion {
+  lista_precio_id: string;
+  lista_nombre: string;
+  variante_id: string;
+  precio: number;
+  moneda: string;
+  canal: string;
+  tipo_cliente: string;
+  sucursal_id?: string | null;
+  fecha_inicio: string;
+  fecha_fin?: string | null;
+}
+
 

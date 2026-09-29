@@ -106,3 +106,101 @@ export function suscribirseACambiosDeCatalogo(
 
   return source;
 }
+
+export interface SyncStatusResponse {
+  suscriptores_activos: number;
+  total_productos: number;
+  ultima_sincronizacion: string | null;
+  eventos_recientes: Array<{
+    tipo: string;
+    mensaje?: string;
+    producto_id?: string;
+    sku?: string;
+    nombre?: string;
+    precio?: number;
+    estado?: string;
+    total_productos?: number;
+    origen?: string;
+    emitido_en: string;
+  }>;
+  estado: string;
+}
+
+/**
+ * RF-08: Obtiene métricas del Hub de sincronización multicanal (suscriptores activos, total catálogo, etc.)
+ */
+export async function obtenerEstadoSincronizacion(): Promise<SyncStatusResponse> {
+  const { data } = await apiClient.get<SyncStatusResponse>('/api/v1/catalogo/sync-status');
+  return data;
+}
+
+/**
+ * RF-08: Emite un broadcast SSE forzado a todas las terminales POS para refrescar el catálogo.
+ */
+export async function forzarSincronizacionCatalogo(): Promise<{
+  mensaje: string;
+  suscriptores_notificados: number;
+  total_productos: number;
+  timestamp: string;
+}> {
+  const { data } = await apiClient.post('/api/v1/catalogo/sync-catalogo/forzar');
+  return data;
+}
+
+// ============================================================================
+// RF-04 / US-04: API DE LISTAS DE PRECIOS DIFERENCIADAS
+// ============================================================================
+import type { ListaPrecio, PrecioItem, PrecioResolucion } from '@/types';
+
+export async function obtenerListasPrecios(params?: {
+  canal?: string;
+  tipo_cliente?: string;
+  sucursal_id?: string;
+  activo?: boolean;
+}): Promise<ListaPrecio[]> {
+  const { data } = await apiClient.get<ListaPrecio[]>('/api/v1/catalogo/listas-precios', { params });
+  return data;
+}
+
+export async function crearListaPrecio(payload: Partial<ListaPrecio>): Promise<ListaPrecio> {
+  const { data } = await apiClient.post<ListaPrecio>('/api/v1/catalogo/listas-precios', payload);
+  return data;
+}
+
+export async function actualizarListaPrecio(id: string, payload: Partial<ListaPrecio>): Promise<ListaPrecio> {
+  const { data } = await apiClient.put<ListaPrecio>(`/api/v1/catalogo/listas-precios/${id}`, payload);
+  return data;
+}
+
+export async function eliminarListaPrecio(id: string): Promise<void> {
+  await apiClient.delete(`/api/v1/catalogo/listas-precios/${id}`);
+}
+
+export async function obtenerItemsListaPrecio(listaId: string): Promise<PrecioItem[]> {
+  const { data } = await apiClient.get<PrecioItem[]>(`/api/v1/catalogo/listas-precios/${listaId}/items`);
+  return data;
+}
+
+export async function asignarPrecioItem(listaId: string, payload: {
+  variante_id: string;
+  precio: number;
+  fecha_inicio?: string;
+  fecha_fin?: string;
+}): Promise<PrecioItem> {
+  const { data } = await apiClient.post<PrecioItem>(`/api/v1/catalogo/listas-precios/${listaId}/items`, payload);
+  return data;
+}
+
+export async function eliminarPrecioItem(listaId: string, itemId: string): Promise<void> {
+  await apiClient.delete(`/api/v1/catalogo/listas-precios/${listaId}/items/${itemId}`);
+}
+
+export async function resolverPrecioVariante(params: {
+  variante_id: string;
+  canal: string;
+  tipo_cliente: string;
+  sucursal_id?: string;
+}): Promise<PrecioResolucion> {
+  const { data } = await apiClient.get<PrecioResolucion>('/api/v1/catalogo/precios/resolver', { params });
+  return data;
+}

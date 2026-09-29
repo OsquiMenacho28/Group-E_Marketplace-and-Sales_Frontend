@@ -7,7 +7,7 @@ const API_BASE_URL =
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 10000,
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json'
   }
@@ -19,6 +19,13 @@ apiClient.interceptors.request.use((config) => {
     // Si la ruta inicia con /v1/ sin el prefijo /api, normalizarla automáticamente
     if (config.url.startsWith('/v1/')) {
       config.url = `/api${config.url}`;
+    }
+    // Si la ruta inicia con /productos o /categorias sin el prefijo /api/v1/catalogo, normalizarla automáticamente
+    if (config.url.startsWith('/productos')) {
+      config.url = `/api/v1/catalogo${config.url}`;
+    }
+    if (config.url.startsWith('/categorias')) {
+      config.url = `/api/v1/catalogo${config.url}`;
     }
     if (config.baseURL?.endsWith('/api') && config.url.startsWith('/api/')) {
       // Normalizar URLs que ya traen prefijo /api si la baseURL ya incluye /api

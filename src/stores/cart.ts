@@ -58,6 +58,7 @@ export const useCartStore = defineStore('cart', () => {
   const reservaError = ref<string | null>(null);
   const lastReservaData = ref<ReservaStockResponse | null>(null);
   const lastCreatedOrderCode = ref<string | null>(null);
+  const lastEmittedInvoice = ref<any | null>(null);
   let timerInterval: ReturnType<typeof setInterval> | null = null;
 
   const itemCount = computed(() => items.value.reduce((acc, curr) => acc + curr.cantidad, 0));
@@ -355,6 +356,7 @@ export const useCartStore = defineStore('cart', () => {
         costo_envio: payload.costo_envio,
         total: total.value + payload.costo_envio,
         reserva_id: reservaId.value,
+        datos_fiscales: payload.datos_fiscales,
         items: items.value.map(i => ({
           variante_id: i.variante_id,
           sku: i.sku,
@@ -370,6 +372,20 @@ export const useCartStore = defineStore('cart', () => {
         const resp = await apiClient.post('/api/v1/ordenes/', orderPayload);
         if (resp.data?.codigo_orden) {
           orderCode = resp.data.codigo_orden;
+        }
+        if (resp.data?.factura) {
+          lastEmittedInvoice.value = resp.data.factura;
+        } else if (resp.data?.cuf_factura) {
+          lastEmittedInvoice.value = {
+            cuf: resp.data.cuf_factura,
+            numero_factura: resp.data.numero_factura,
+            total: total.value + payload.costo_envio,
+            codigo_qr: `https://pilotosiat.impuestos.gob.bo/consulta/QR?nit=1028374029&cuf=${resp.data.cuf_factura}&numero=${resp.data.numero_factura || 1001}&t=${(total.value + payload.costo_envio).toFixed(2)}`,
+            datos_comprador: {
+              nit_ci: payload.datos_fiscales?.nit_ci || '0',
+              razon_social: payload.datos_fiscales?.razon_social || 'CONSUMIDOR FINAL'
+            }
+          };
         }
       } catch (err) {
         console.warn('Backend órdenes no disponible, usando código generado localmente:', orderCode);
@@ -427,6 +443,7 @@ export const useCartStore = defineStore('cart', () => {
     reservaError,
     lastReservaData,
     lastCreatedOrderCode,
+    lastEmittedInvoice,
     formattedTimeLeft,
     timerProgressPercent,
     isUrgentTimer,
