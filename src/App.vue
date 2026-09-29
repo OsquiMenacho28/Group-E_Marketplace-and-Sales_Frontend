@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useCartStore } from '@/stores/cart';
 import { useAuthStore } from '@/stores/auth';
+import { useWishlistStore } from '@/stores/wishlist';
+import { apiClient } from '@/api/client';
+import AuthModal from '@/components/auth/AuthModal.vue';
+import CheckoutModal from '@/components/checkout/CheckoutModal.vue';
 import { 
   ShoppingBag, 
   Store, 
@@ -12,24 +16,74 @@ import {
   Check, 
   UserCircle, 
   ChevronRight,
-  ShieldAlert
+  ShieldAlert,
+  LogIn,
+  Sparkles,
+  LogOut,
+  User,
+  ChevronDown,
+  Loader2,
+  Heart
 } from 'lucide-vue-next';
 
 const route = useRoute();
 const cartStore = useCartStore();
 const authStore = useAuthStore();
+const wishlistStore = useWishlistStore();
+const isUserMenuOpen = ref(false);
+
+onMounted(() => {
+  wishlistStore.cargarDeseos(authStore.user?.id);
+});
+
+watch(
+  () => authStore.user?.id,
+  (newId) => {
+    wishlistStore.cargarDeseos(newId);
+  }
+);
 
 const cuponInput = ref('');
 const cuponMsg = ref('');
+const checkoutMsg = ref('');
 
-function canjearCupon() {
+async function canjearCupon() {
   if (!cuponInput.value) return;
-  const ok = cartStore.aplicarCupon(cuponInput.value);
+  const ok = await cartStore.aplicarCupon(cuponInput.value);
   if (ok) {
     cuponMsg.value = '¡Cupón MAXI10 aplicado (10% de descuento)!';
   } else {
     cuponMsg.value = 'Cupón inválido. Prueba con MAXI10';
   }
+}
+
+async function iniciarCheckout() {
+  if (!authStore.user?.id) {
+    authStore.openAuthModal('login');
+    checkoutMsg.value = 'Inicia sesión para reservar el stock antes del pago.';
+    return;
+  }
+  checkoutMsg.value = '';
+  try {
+    const response = await apiClient.post(`/api/v1/carrito/${cartStore.sessionId}/checkout/iniciar`, {
+      cliente_id: authStore.user.id,
+      metodo_pago: 'tarjeta',
+      tipo_despacho: 'domicilio'
+    });
+    checkoutMsg.value = `Stock reservado por ${Math.floor(response.data.ttl_expira_en_segundos / 60)} minutos.`;
+  } catch (error: any) {
+    checkoutMsg.value = error.response?.data?.detail || 'No fue posible reservar el stock.';
+  }
+}
+
+function handleLogout() {
+  authStore.logout();
+  isUserMenuOpen.value = false;
+}
+
+function handleIniciarCheckout() {
+  const clienteId = authStore.user?.id || 'cliente-anonimo';
+  cartStore.iniciarCheckoutConReserva(clienteId);
 }
 </script>
 
@@ -48,11 +102,11 @@ function canjearCupon() {
               <span class="font-extrabold text-lg tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
                 MaxiConecta
               </span>
-              <span class="block text-[10px] text-slate-400 font-medium -mt-1">Marketplace y Ventas (Grupo E)</span>
+              <span class="block text-[10px] text-slate-400 font-medium -mt-1">Marketplace y Ventas</span>
             </div>
           </router-link>
 
-          <!-- Selector de Portales (Marketplace / POS / Admin) -->
+          <!-- Selector de Portales según Rol de Usuario -->
           <nav class="hidden md:flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
             <router-link
               to="/marketplace"
@@ -66,7 +120,23 @@ function canjearCupon() {
               <ShoppingBag class="w-3.5 h-3.5" /> Marketplace
             </router-link>
 
+            <!-- Acceso a compras y cuenta para clientes -->
             <router-link
+              v-if="authStore.isAuthenticated && authStore.userRole === 'cliente'"
+              to="/mi-cuenta"
+              :class="[
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
+                route.path.startsWith('/mi-cuenta')
+                  ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+              ]"
+            >
+              <User class="w-3.5 h-3.5" /> Mis Compras
+            </router-link>
+
+            <!-- Pestaña Terminal POS: sólo para cajero o administrador -->
+            <router-link
+              v-if="authStore.hasRole(['cajero', 'administrador'])"
               to="/pos"
               :class="[
                 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
@@ -78,7 +148,9 @@ function canjearCupon() {
               <Store class="w-3.5 h-3.5" /> Punto de Venta (POS)
             </router-link>
 
+            <!-- Pestaña Panel Admin: sólo para administrador o gerente comercial -->
             <router-link
+              v-if="authStore.hasRole(['administrador', 'gerente_comercial'])"
               to="/admin"
               :class="[
                 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
@@ -92,26 +164,141 @@ function canjearCupon() {
           </nav>
         </div>
 
-        <!-- Acciones Derecha (Rol Selector & Botón Carrito) -->
+        <!-- Acciones Derecha (Identidad/Login & Carrito) -->
         <div class="flex items-center gap-3">
-          <!-- Selector Rápido de Rol (Para pruebas y presentación) -->
-          <div class="hidden sm:flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg text-xs">
-            <UserCircle class="w-4 h-4 text-slate-400" />
-            <select
-              :value="authStore.userRole"
-              @change="(e) => authStore.setRole((e.target as HTMLSelectElement).value as any)"
-              class="bg-transparent text-xs font-semibold focus:outline-none cursor-pointer text-slate-700 dark:text-slate-200"
+          <!-- Estado No Autenticado (Invitado) -->
+          <div v-if="!authStore.isAuthenticated" class="flex items-center gap-2">
+            <button
+              @click="authStore.openAuthModal('login')"
+              class="px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors flex items-center gap-1.5"
             >
-              <option value="administrador">Rol: Administrador</option>
-              <option value="cajero">Rol: Cajero</option>
-              <option value="gerente_comercial">Rol: Gerente Comercial</option>
-              <option value="cliente">Rol: Cliente</option>
-            </select>
+              <LogIn class="w-3.5 h-3.5" /> Iniciar Sesión
+            </button>
+            <button
+              @click="authStore.openAuthModal('register')"
+              class="hidden sm:flex items-center gap-1 px-3 py-1.5 text-xs font-bold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl shadow-md transition-all"
+            >
+              <Sparkles class="w-3.5 h-3.5" /> Registrarse (+50 pts)
+            </button>
           </div>
+
+          <!-- Estado Autenticado -->
+          <div v-else class="flex items-center gap-2">
+            <!-- Badge de Puntos para Cliente -->
+            <router-link
+              to="/mi-cuenta"
+              v-if="authStore.userRole === 'cliente'"
+              class="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900/60 rounded-xl text-xs font-bold hover:bg-amber-100 transition-colors"
+              title="Ver mis puntos acumulados"
+            >
+              <Sparkles class="w-3.5 h-3.5 text-amber-500" />
+              <span>{{ authStore.pointsBalance }} pts</span>
+            </router-link>
+
+            <!-- Botón / Menú de Usuario -->
+            <div class="relative">
+              <button
+                @click="isUserMenuOpen = !isUserMenuOpen"
+                class="flex items-center gap-2 px-2.5 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/80 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold transition-colors border border-slate-200/60 dark:border-slate-700"
+              >
+                <div class="w-6 h-6 rounded-lg bg-blue-600 text-white flex items-center justify-center text-[10px] font-black shadow-sm">
+                  {{ authStore.user?.nombre_completo.charAt(0).toUpperCase() || 'U' }}
+                </div>
+                <span class="max-w-[110px] truncate hidden sm:inline">{{ authStore.user?.nombre_completo.split(' ')[0] }}</span>
+                <span 
+                  :class="[
+                    'text-[9px] uppercase font-extrabold px-1.5 py-0.5 rounded',
+                    authStore.userRole === 'administrador' 
+                      ? 'bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300'
+                      : authStore.userRole === 'cajero'
+                      ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
+                  ]"
+                >
+                  {{ authStore.userRole }}
+                </span>
+                <ChevronDown class="w-3.5 h-3.5 text-slate-400" />
+              </button>
+
+              <!-- Dropdown Flotante -->
+              <div
+                v-if="isUserMenuOpen"
+                class="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-2 z-50 text-xs space-y-1 animate-in fade-in"
+              >
+                <div class="p-2 border-b border-slate-100 dark:border-slate-800 mb-1">
+                  <p class="font-bold text-slate-900 dark:text-white truncate">{{ authStore.user?.nombre_completo }}</p>
+                  <p class="text-[10px] text-slate-400 truncate">{{ authStore.user?.email }}</p>
+                </div>
+
+                <router-link
+                  to="/mi-cuenta"
+                  @click="isUserMenuOpen = false"
+                  class="flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold"
+                >
+                  <User class="w-3.5 h-3.5 text-blue-500" /> Mi Cuenta y Compras
+                </router-link>
+
+                <router-link
+                  v-if="authStore.hasRole(['cajero', 'administrador'])"
+                  to="/pos"
+                  @click="isUserMenuOpen = false"
+                  class="flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold"
+                >
+                  <Store class="w-3.5 h-3.5 text-emerald-500" /> Terminal POS
+                </router-link>
+
+                <router-link
+                  v-if="authStore.hasRole(['administrador', 'gerente_comercial'])"
+                  to="/admin"
+                  @click="isUserMenuOpen = false"
+                  class="flex items-center gap-2 px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold"
+                >
+                  <LayoutDashboard class="w-3.5 h-3.5 text-indigo-500" /> Panel Administrador
+                </router-link>
+
+                <router-link
+                  to="/wishlist"
+                  @click="isUserMenuOpen = false"
+                  class="flex items-center justify-between px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold"
+                >
+                  <span class="flex items-center gap-2">
+                    <Heart class="w-3.5 h-3.5 text-rose-500" /> Mi Lista de Deseos
+                  </span>
+                  <span v-if="wishlistStore.itemCount > 0" class="text-[10px] font-bold bg-rose-100 dark:bg-rose-900/60 text-rose-600 dark:text-rose-300 px-2 py-0.5 rounded-full">
+                    {{ wishlistStore.itemCount }}
+                  </span>
+                </router-link>
+
+                <div class="border-t border-slate-100 dark:border-slate-800 my-1"></div>
+
+                <button
+                  @click="handleLogout"
+                  class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 font-semibold"
+                >
+                  <LogOut class="w-3.5 h-3.5" /> Cerrar Sesión
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Botón Lista de Deseos (RF-21 / US-21) -->
+          <router-link
+            to="/wishlist"
+            class="relative p-2.5 bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 dark:hover:bg-rose-900/40 text-rose-600 dark:text-rose-400 rounded-xl transition-colors"
+            title="Mi Lista de Deseos"
+          >
+            <Heart class="w-5 h-5" />
+            <span
+              v-if="wishlistStore.itemCount > 0"
+              class="absolute -top-1 -right-1 w-5 h-5 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center shadow-md"
+            >
+              {{ wishlistStore.itemCount }}
+            </span>
+          </router-link>
 
           <!-- Botón Carrito Flotante (RF-13) -->
           <button
-            @click="cartStore.toggleDrawer"
+            @click="cartStore.openDrawer"
             class="relative p-2.5 bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 text-blue-600 dark:text-blue-400 rounded-xl"
             title="Abrir Carrito"
           >
@@ -133,30 +320,39 @@ function canjearCupon() {
     </main>
 
     <!-- Drawer Deslizante de Carrito Persistente (RF-13, RF-14) -->
-    <div
-      v-if="cartStore.isDrawerOpen"
-      class="fixed inset-0 z-50 overflow-hidden bg-black/60 backdrop-blur-sm transition-opacity"
-    >
+    <Teleport to="body">
+      <Transition name="cart-overlay">
+        <div
+          v-if="cartStore.isDrawerOpen"
+          class="fixed inset-0 z-[100] overflow-hidden bg-black/60 backdrop-blur-sm"
+          @click.self="cartStore.closeDrawer"
+        >
       <div class="fixed inset-y-0 right-0 max-w-full flex pl-10">
-        <div class="w-screen max-w-md bg-white dark:bg-slate-900 shadow-2xl flex flex-col border-l border-slate-200 dark:border-slate-800">
+        <div class="cart-drawer w-screen max-w-md bg-white dark:bg-slate-900 shadow-2xl flex flex-col border-l border-slate-200 dark:border-slate-800">
           <!-- Drawer Header -->
           <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
             <div class="flex items-center gap-2">
               <ShoppingBag class="w-5 h-5 text-blue-600" />
-              <h2 class="text-base font-bold">Carrito de Compras (Redis)</h2>
+              <div>
+                <h2 class="text-base font-bold">Carrito de Compras</h2>
+                <span class="text-[10px] text-emerald-600 font-semibold flex items-center gap-1"><span class="w-1.5 h-1.5 bg-emerald-500 rounded-full soft-pulse"></span> Sincronizado en tiempo real</span>
+              </div>
             </div>
-            <button @click="cartStore.toggleDrawer" class="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+            <button @click="cartStore.closeDrawer" class="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
               <X class="w-5 h-5 text-slate-500" />
             </button>
           </div>
 
           <!-- Drawer Body: Lista de Ítems -->
           <div class="flex-1 overflow-y-auto p-5 space-y-4">
-            <div
-              v-for="item in cartStore.items"
-              :key="item.variante_id"
-              class="flex gap-3 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-100 dark:border-slate-800"
-            >
+            <p v-if="cartStore.error" class="p-3 rounded-lg bg-rose-50 text-rose-700 text-xs font-medium">{{ cartStore.error }}</p>
+            <div v-if="cartStore.isLoading" class="flex items-center gap-2 text-xs text-slate-400"><span class="w-4 h-4 border-2 border-teal-600 border-t-transparent rounded-full animate-spin"></span> Actualizando carrito...</div>
+            <TransitionGroup name="cart-item" tag="div" class="space-y-3">
+              <div
+                v-for="item in cartStore.items"
+                :key="item.variante_id"
+                class="flex gap-3 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-100 dark:border-slate-800"
+              >
               <div class="flex-1">
                 <h4 class="text-xs font-bold text-slate-800 dark:text-slate-200 line-clamp-2">{{ item.nombre }}</h4>
                 <span class="text-[11px] font-mono text-slate-400">BOB {{ item.precio_unitario.toFixed(2) }} c/u</span>
@@ -174,7 +370,8 @@ function canjearCupon() {
                 </button>
                 <span class="text-sm font-bold text-blue-600">BOB {{ item.total_linea.toFixed(2) }}</span>
               </div>
-            </div>
+              </div>
+            </TransitionGroup>
 
             <div v-if="cartStore.items.length === 0" class="py-12 text-center text-slate-400 space-y-2">
               <ShoppingBag class="w-12 h-12 mx-auto text-slate-300 dark:text-slate-700" />
@@ -184,7 +381,7 @@ function canjearCupon() {
 
           <!-- Drawer Footer: Cupones y Checkout -->
           <div class="p-5 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/80 space-y-3">
-            <!-- Input Cupón (RF-17) -->
+            <!-- Input Cupón -->
             <div class="flex gap-2">
               <input
                 v-model="cuponInput"
@@ -197,6 +394,7 @@ function canjearCupon() {
               </button>
             </div>
             <p v-if="cuponMsg" class="text-[11px] text-emerald-600 font-semibold">{{ cuponMsg }}</p>
+            <p v-if="checkoutMsg" class="text-[11px] text-teal-700 font-semibold">{{ checkoutMsg }}</p>
 
             <div class="space-y-1 text-xs text-slate-500 pt-1">
               <div class="flex justify-between">
@@ -214,15 +412,22 @@ function canjearCupon() {
             </div>
 
             <button
-              :disabled="cartStore.items.length === 0"
-              class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg flex items-center justify-center gap-2"
+              @click="handleIniciarCheckout"
+              :disabled="cartStore.items.length === 0 || cartStore.isReserving"
+              class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all hover:shadow-blue-500/25"
             >
-              Iniciar Checkout [Reserva Stock TTL] <ChevronRight class="w-4 h-4" />
+              <Loader2 v-if="cartStore.isReserving" class="w-4 h-4 animate-spin" />
+              <span v-if="cartStore.isReserving">Reservando productos...</span>
+              <span v-else class="flex items-center gap-2">
+                Iniciar Checkout <ChevronRight class="w-4 h-4" />
+              </span>
             </button>
           </div>
         </div>
       </div>
-    </div>
+        </div>
+      </Transition>
+    </Teleport>
 
     <!-- Footer Institucional UCB -->
     <footer class="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 py-6 text-center text-xs text-slate-500">
@@ -235,5 +440,11 @@ function canjearCupon() {
         </p>
       </div>
     </footer>
+
+    <!-- Modal de Autenticación Unificado (Login / Registro / Cuentas Demo) -->
+    <AuthModal />
+
+    <!-- Modal de Checkout con Reserva de Stock y Contador TTL (RF-14 · RIO-INV-02) -->
+    <CheckoutModal />
   </div>
 </template>
