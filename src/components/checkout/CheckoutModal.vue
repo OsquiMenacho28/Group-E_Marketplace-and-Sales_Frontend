@@ -36,6 +36,7 @@ const authStore = useAuthStore();
 
 // Estados del formulario de Checkout
 const step = ref<'formulario' | 'exito'>('formulario');
+const orderError = ref('');
 const tipoDespacho = ref<CheckoutModalidad>('domicilio');
 const metodoPago = ref<CheckoutMetodoPago>('qr');
 const direccionEntrega = ref('Av. 6 de Agosto #2450, Sopocachi, La Paz');
@@ -142,19 +143,25 @@ async function handleConfirmarOrden() {
   }
 
   const clienteId = authStore.user?.id || 'cliente-anonimo';
-  
-  await cartStore.finalizarOrdenConReserva(
-    {
-      tipo_despacho: tipoDespacho.value,
-      metodo_pago: metodoPago.value,
-      sucursal_id: tipoDespacho.value === 'retiro_sucursal' ? sucursalSeleccionada.value : undefined,
-      direccion_entrega: tipoDespacho.value === 'domicilio' ? direccionEntrega.value : undefined,
-      costo_envio: costoEnvio.value,
-      notas: notasEntrega.value,
-      datos_fiscales: fiscalData.value
-    },
-    clienteId
-  );
+  orderError.value = '';
+
+  try {
+    await cartStore.finalizarOrdenConReserva(
+      {
+        tipo_despacho: tipoDespacho.value,
+        metodo_pago: metodoPago.value,
+        sucursal_id: tipoDespacho.value === 'retiro_sucursal' ? sucursalSeleccionada.value : undefined,
+        direccion_entrega: tipoDespacho.value === 'domicilio' ? direccionEntrega.value : undefined,
+        costo_envio: costoEnvio.value,
+        notas: notasEntrega.value,
+        datos_fiscales: fiscalData.value
+      },
+      clienteId
+    );
+  } catch (error: any) {
+    orderError.value = error.message;
+    return;
+  }
 
   step.value = 'exito';
 }
@@ -677,6 +684,9 @@ function handleRenovarReserva() {
 
               <!-- Botones de Acción -->
               <div class="space-y-2 pt-2">
+                <p v-if="orderError" role="alert" class="p-2.5 rounded-lg bg-rose-50 text-rose-700 text-xs font-semibold border border-rose-200">
+                  {{ orderError }}
+                </p>
                 <button
                   @click="handleConfirmarOrden"
                   :disabled="cartStore.isProcessingOrder || cartStore.reservaStatus === 'expirada'"

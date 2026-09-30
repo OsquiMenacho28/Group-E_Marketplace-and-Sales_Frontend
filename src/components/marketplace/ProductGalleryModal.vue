@@ -79,9 +79,13 @@ function nextImage() {
 
 function handleAddToCart() {
   if (props.product) {
+    const variant = props.product.variantes?.find((item) => item.id === selectedVariantId.value);
+    // El stock se controla por producto: todas sus variantes comparten el SKU del producto.
     const itemToCart: MarketplaceProduct = {
       ...props.product,
-      sku: activeSku.value,
+      nombre: variant && props.product.variantes!.length > 1
+        ? `${props.product.nombre} (${variant.nombre_variante})`
+        : props.product.nombre,
       precio: activePrice.value,
       id: selectedVariantId.value || props.product.id
     };
@@ -242,10 +246,10 @@ function handleAddToCart() {
         <button
           @click="handleAddToCart"
           class="px-5 py-2.5 bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold rounded-xl shadow-md flex items-center gap-2 transition-colors active:scale-95 disabled:opacity-50"
-          :disabled="product.stock <= 0"
+          :disabled="product.stock === 0"
         >
           <ShoppingBag class="w-4 h-4" />
-          <span>Añadir al Carrito</span>
+          <span>{{ product.stock === 0 ? 'Agotado' : 'Añadir al Carrito' }}</span>
         </button>
       </div>
     </div>

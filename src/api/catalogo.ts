@@ -204,3 +204,20 @@ export async function resolverPrecioVariante(params: {
   const { data } = await apiClient.get<PrecioResolucion>('/api/v1/catalogo/precios/resolver', { params });
   return data;
 }
+
+export async function resolverPreciosLote(params: {
+  variante_ids: string[];
+  canal: 'web' | 'pos' | 'b2b';
+  tipo_cliente: 'retail' | 'corporativo_b2b';
+  sucursal_id?: string;
+}): Promise<Record<string, PrecioResolucion>> {
+  const { data } = await apiClient.get<Record<string, PrecioResolucion>>('/api/v1/catalogo/precios/resolver-lote', {
+    params: { ...params, variante_ids: params.variante_ids.join(',') }
+  });
+  return data;
+}
+
+export async function obtenerPreciosProducto(productoId: string): Promise<PrecioItem[]> {
+  const { data } = await apiClient.get<PrecioItem[]>(`/api/v1/catalogo/productos/${productoId}/precios`);
+  return data;
+}

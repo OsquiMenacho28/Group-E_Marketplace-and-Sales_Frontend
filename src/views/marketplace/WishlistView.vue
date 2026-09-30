@@ -41,15 +41,15 @@ onMounted(() => {
   wishlistStore.cargarDeseos(authStore.user?.id);
 });
 
-function handleMoverAlCarrito(item: WishlistItem) {
-  const exito = wishlistStore.moverAlCarrito(item.variante_id, authStore.user?.id);
+async function handleMoverAlCarrito(item: WishlistItem) {
+  const exito = await wishlistStore.moverAlCarrito(item.variante_id, authStore.user?.id);
   if (exito) {
     showToast(`"${item.nombre || 'Producto'}" se movió al carrito de compras.`);
   }
 }
 
-function handleMoverTodosAlCarrito() {
-  const total = wishlistStore.moverTodosAlCarrito(authStore.user?.id);
+async function handleMoverTodosAlCarrito() {
+  const total = await wishlistStore.moverTodosAlCarrito(authStore.user?.id);
   if (total > 0) {
     showToast(`¡Se movieron ${total} producto(s) al carrito de compras!`);
   }

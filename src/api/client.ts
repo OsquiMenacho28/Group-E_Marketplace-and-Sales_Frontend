@@ -39,20 +39,48 @@ apiClient.interceptors.request.use((config) => {
   return config;
 });
 
+let refreshInFlight: Promise<string | null> | null = null;
+
+async function renovarSesion(): Promise<string | null> {
+  const refreshToken = localStorage.getItem('maxiconecta_refresh_token');
+  if (!refreshToken) return null;
+  try {
+    const { data } = await axios.post(`${API_BASE_URL}/api/v1/clientes/auth/refresh`, { refresh_token: refreshToken });
+    localStorage.setItem('maxiconecta_token', data.access_token);
+    localStorage.setItem('maxiconecta_refresh_token', data.refresh_token);
+    if (data.user) localStorage.setItem('maxiconecta_user', JSON.stringify(data.user));
+    window.dispatchEvent(new CustomEvent('maxiconecta:session-refreshed', { detail: data }));
+    return data.access_token as string;
+  } catch {
+    return null;
+  }
+}
+
 // Manejo centralizado de respuestas de error
 apiClient.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      // Si la petición no era de login/registro, advertir de sesión expirada
-      const url = error.config?.url || '';
-      if (!url.includes('/login') && !url.includes('/registro')) {
-        console.warn('Sesión expirada o token no válido. Limpiando almacenamiento.');
-        localStorage.removeItem('maxiconecta_token');
-        localStorage.removeItem('maxiconecta_refresh_token');
-        localStorage.removeItem('maxiconecta_user');
+  async (error) => {
+    const config = error.config;
+    const url: string = config?.url || '';
+    if (error.response?.status !== 401 || !config || url.includes('/auth/')) {
+      return Promise.reject(error);
+    }
+
+    if (!config._sessionRetried) {
+      config._sessionRetried = true;
+      refreshInFlight ??= renovarSesion().finally(() => { refreshInFlight = null; });
+      const newToken = await refreshInFlight;
+      if (newToken) {
+        config.headers.Authorization = `Bearer ${newToken}`;
+        return apiClient(config);
       }
     }
+
+    console.warn('Sesión expirada o token no válido. Se requiere iniciar sesión nuevamente.');
+    localStorage.removeItem('maxiconecta_token');
+    localStorage.removeItem('maxiconecta_refresh_token');
+    localStorage.removeItem('maxiconecta_user');
+    window.dispatchEvent(new CustomEvent('maxiconecta:session-expired'));
     return Promise.reject(error);
   }
 );

@@ -80,6 +80,19 @@ export const useAuthStore = defineStore('auth', () => {
     return allowed.includes(user.value.role);
   }
 
+  window.addEventListener('maxiconecta:session-refreshed', (event) => {
+    const data = (event as CustomEvent<AuthResponse>).detail;
+    token.value = data.access_token;
+    refreshToken.value = data.refresh_token;
+    if (data.user) user.value = data.user;
+  });
+
+  window.addEventListener('maxiconecta:session-expired', () => {
+    if (!user.value) return;
+    logout();
+    openAuthModal('login');
+  });
+
   return {
     token,
     refreshToken,

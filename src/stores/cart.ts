@@ -2,6 +2,7 @@ import { computed, ref, watch } from 'vue';
 import { defineStore } from 'pinia';
 import type { ItemCarrito, ReservaStockResponse, ReservaStockStatus, CheckoutPayload } from '@/types';
 import { apiClient } from '@/api/client';
+import { consultarStock } from '@/api/catalogo';
 
 const STORAGE_KEY_ITEMS = 'maxiconecta_cart_items';
 const STORAGE_KEY_RESERVA = 'maxiconecta_checkout_reserva';
@@ -106,8 +107,28 @@ export const useCartStore = defineStore('cart', () => {
     isDrawerOpen.value = !isDrawerOpen.value;
   }
 
-  function addItem(item: Omit<ItemCarrito, 'total_linea'>) {
+  function quantityForSku(sku: string) {
+    return items.value.filter(i => i.sku === sku).reduce((total, i) => total + i.cantidad, 0);
+  }
+
+  function addItem(item: Omit<ItemCarrito, 'total_linea'>): boolean {
+    error.value = '';
+    if (!Number.isInteger(item.stock_disponible) || item.stock_disponible! < 0) {
+      error.value = 'No se puede agregar el producto porque su stock no está verificado.';
+      isDrawerOpen.value = true;
+      return false;
+    }
+
     const existing = items.value.find(i => i.variante_id === item.variante_id);
+    if (quantityForSku(item.sku) + item.cantidad > item.stock_disponible!) {
+      error.value = item.stock_disponible === 0
+        ? `${item.nombre} está agotado.`
+        : `Stock insuficiente. Solo hay ${item.stock_disponible} unidad(es) disponibles y ya tienes ${quantityForSku(item.sku)} en el carrito.`;
+      isDrawerOpen.value = true;
+      return false;
+    }
+
+    items.value.filter(i => i.sku === item.sku).forEach(i => { i.stock_disponible = item.stock_disponible; });
     if (existing) {
       existing.cantidad += item.cantidad;
       existing.total_linea = existing.cantidad * existing.precio_unitario;
@@ -118,15 +139,36 @@ export const useCartStore = defineStore('cart', () => {
       });
     }
     isDrawerOpen.value = true;
+    return true;
   }
 
   function removeItem(varianteId: string) {
     items.value = items.value.filter(i => i.variante_id !== varianteId);
   }
 
+  function canIncrease(item: ItemCarrito) {
+    return item.stock_disponible !== undefined && quantityForSku(item.sku) < item.stock_disponible;
+  }
+
+  async function refreshStock() {
+    const skus = [...new Set(items.value.map(i => i.sku))];
+    await Promise.allSettled(skus.map(async sku => {
+      const stock = await consultarStock(sku);
+      items.value.filter(i => i.sku === sku).forEach(i => { i.stock_disponible = stock.stock_disponible; });
+    }));
+  }
+
   function updateQuantity(varianteId: string, delta: number) {
     const item = items.value.find(i => i.variante_id === varianteId);
     if (item) {
+      error.value = '';
+      if (delta > 0 && !canIncrease(item)) {
+        error.value = item.stock_disponible === undefined
+          ? 'Verificando stock del producto, inténtalo nuevamente.'
+          : `Stock máximo alcanzado: ${item.stock_disponible} unidad(es).`;
+        if (item.stock_disponible === undefined) void refreshStock();
+        return;
+      }
       item.cantidad += delta;
       if (item.cantidad <= 0) {
         removeItem(varianteId);
@@ -260,8 +302,38 @@ export const useCartStore = defineStore('cart', () => {
     reservaStatus.value = 'reservando';
 
     try {
+      // Una reserva anterior de esta sesión retiene unidades: se libera antes de volver a reservar.
+      if (reservaId.value) {
+        await apiClient.post(`/api/v1/carrito/checkout/reserva/${reservaId.value}/cancelar`, {}).catch(() => undefined);
+        reservaId.value = null;
+        limpiarSesionReserva();
+      }
+
+      await refreshStock();
+      for (const sku of new Set(items.value.map(i => i.sku))) {
+        const line = items.value.find(i => i.sku === sku)!;
+        if (quantityForSku(sku) > (line.stock_disponible ?? 0)) {
+          throw new Error(`Stock insuficiente para ${line.nombre}. Disponibles: ${line.stock_disponible ?? 0}.`);
+        }
+      }
+
+      const cartUrl = `/api/v1/carrito/${encodeURIComponent(sessionId.value)}`;
+      const remoteCart = await apiClient.get(cartUrl);
+      for (const remoteItem of remoteCart.data.items || []) {
+        await apiClient.delete(`${cartUrl}/items/${encodeURIComponent(remoteItem.variante_id)}`);
+      }
+      for (const item of items.value) {
+        await apiClient.post(`${cartUrl}/items`, {
+          variante_id: item.variante_id,
+          sku: item.sku,
+          nombre: item.nombre,
+          cantidad: item.cantidad,
+          precio_unitario: item.precio_unitario
+        });
+      }
+
       const response = await apiClient.post<ReservaStockResponse>(
-        `/api/v1/carrito/${clienteId}/checkout/iniciar`,
+        `${cartUrl}/checkout/iniciar`,
         {
           cliente_id: clienteId,
           tipo_despacho: 'domicilio',
@@ -281,30 +353,10 @@ export const useCartStore = defineStore('cart', () => {
       isDrawerOpen.value = false;
       isCheckoutModalOpen.value = true;
     } catch (err: any) {
-      console.warn('API Gateway offline o error de red. Activando modo mock local para reserva:', err);
-      
-      if (err.response?.status === 409) {
-        reservaStatus.value = 'error';
-        reservaError.value = err.response?.data?.detail || 'Stock insuficiente para uno o más productos del carrito.';
-        return;
-      }
-
-      const mockId = `RES-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-      reservaId.value = mockId;
-      const mockData: ReservaStockResponse = {
-        reserva_id: mockId,
-        ttl_expira_en_segundos: 900,
-        monto_total: total.value,
-        metodo_pago: 'qr',
-        status: 'RESERVA_CONFIRMADA'
-      };
-      lastReservaData.value = mockData;
-      reservaStatus.value = 'activa';
-      iniciarTemporizador(900);
-      guardarSesionReserva(mockId, 900, mockData);
-
-      isDrawerOpen.value = false;
-      isCheckoutModalOpen.value = true;
+      const message = err.response?.data?.detail || err.message || 'No fue posible verificar ni reservar el stock.';
+      reservaStatus.value = 'error';
+      reservaError.value = message;
+      error.value = message;
     } finally {
       isReserving.value = false;
     }
@@ -366,13 +418,11 @@ export const useCartStore = defineStore('cart', () => {
         }))
       };
 
-      let orderCode = `ORD-${new Date().getFullYear()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+      let orderCode = '';
 
       try {
         const resp = await apiClient.post('/api/v1/ordenes/', orderPayload);
-        if (resp.data?.codigo_orden) {
-          orderCode = resp.data.codigo_orden;
-        }
+        orderCode = resp.data?.codigo_orden || resp.data?.codigo || String(resp.data?.id || '');
         if (resp.data?.factura) {
           lastEmittedInvoice.value = resp.data.factura;
         } else if (resp.data?.cuf_factura) {
@@ -387,8 +437,8 @@ export const useCartStore = defineStore('cart', () => {
             }
           };
         }
-      } catch (err) {
-        console.warn('Backend órdenes no disponible, usando código generado localmente:', orderCode);
+      } catch (err: any) {
+        throw new Error(err.response?.data?.detail || 'No se pudo registrar la orden. Tu reserva sigue activa, inténtalo nuevamente.');
       }
 
       lastCreatedOrderCode.value = orderCode;
@@ -430,6 +480,8 @@ export const useCartStore = defineStore('cart', () => {
     addItem,
     removeItem,
     updateQuantity,
+    canIncrease,
+    refreshStock,
     aplicarCupon,
     removerCupon,
     // Stock reservation state & methods

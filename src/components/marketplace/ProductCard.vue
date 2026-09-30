@@ -80,8 +80,8 @@ defineEmits<{
         </h3>
         <div class="flex items-center justify-between text-[11px] text-slate-400 font-mono mt-1">
           <span>SKU: {{ product.sku }}</span>
-          <span :class="product.stock > 0 ? 'text-emerald-600 font-semibold' : 'text-rose-500 font-semibold'">
-            {{ product.stock > 0 ? `${product.stock} disp.` : 'Agotado' }}
+          <span :class="product.stock > 0 ? 'text-emerald-600 font-semibold' : product.stock === 0 ? 'text-rose-500 font-semibold' : 'text-slate-400 font-semibold'">
+            {{ product.stock > 0 ? `${product.stock} disp.` : product.stock === 0 ? 'Agotado' : 'Consultar stock' }}
           </span>
         </div>
         <!-- RF-07: Badge reactivo de disponibilidad (RIO-INV-01 + caché Redis 30s) -->
@@ -118,9 +118,9 @@ defineEmits<{
         </div>
         <button
           @click="$emit('addToCart', product)"
-          class="p-2.5 bg-teal-700 hover:bg-teal-800 text-white rounded-xl shadow-md active:scale-95 transition-all"
-          title="Añadir al carrito"
-          :disabled="product.stock <= 0"
+          class="p-2.5 bg-teal-700 hover:bg-teal-800 text-white rounded-xl shadow-md active:scale-95 transition-all disabled:bg-slate-300 disabled:cursor-not-allowed disabled:active:scale-100"
+          :title="product.stock === 0 ? 'Producto agotado' : 'Verificar stock y añadir al carrito'"
+          :disabled="product.stock === 0"
         >
           <ShoppingBag class="w-4 h-4" />
         </button>

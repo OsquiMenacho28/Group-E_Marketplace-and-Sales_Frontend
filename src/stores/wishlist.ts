@@ -3,6 +3,7 @@ import { ref, computed } from 'vue';
 import type { WishlistItem } from '@/types';
 import { apiClient } from '@/api/client';
 import { useCartStore } from '@/stores/cart';
+import { consultarStock } from '@/api/catalogo';
 
 const STORAGE_KEY_WISHLIST = 'maxiconecta_wishlist_items';
 
@@ -175,18 +176,28 @@ export const useWishlistStore = defineStore('wishlist', () => {
   /**
    * US-21: Mover un producto individual de la lista de deseos al carrito.
    */
-  function moverAlCarrito(varianteId: string, clienteId?: string): boolean {
+  async function moverAlCarrito(varianteId: string, clienteId?: string): Promise<boolean> {
     const item = items.value.find(i => i.variante_id === varianteId);
     if (!item) return false;
 
     const cartStore = useCartStore();
-    cartStore.addItem({
-      variante_id: item.variante_id,
-      sku: item.sku || 'SKU-ITEM',
-      nombre: item.nombre || 'Producto',
-      cantidad: 1,
-      precio_unitario: item.precio || 0
-    });
+    try {
+      const sku = item.sku || '';
+      const stock = await consultarStock(sku);
+      const added = cartStore.addItem({
+        variante_id: item.variante_id,
+        sku,
+        nombre: item.nombre || 'Producto',
+        cantidad: 1,
+        precio_unitario: item.precio || 0,
+        stock_disponible: stock.stock_disponible
+      });
+      if (!added) return false;
+    } catch {
+      cartStore.error = `No se pudo verificar el stock de ${item.nombre || 'este producto'}.`;
+      cartStore.openDrawer();
+      return false;
+    }
 
     eliminarDeseo(varianteId, clienteId);
     return true;
@@ -196,21 +207,12 @@ export const useWishlistStore = defineStore('wishlist', () => {
    * US-21 / Criterio de Aceptación:
    * Acción masiva "Mover todos al Carrito".
    */
-  function moverTodosAlCarrito(clienteId?: string): number {
+  async function moverTodosAlCarrito(clienteId?: string): Promise<number> {
     if (items.value.length === 0) return 0;
 
-    const cartStore = useCartStore();
-    const count = items.value.length;
-
+    let count = 0;
     for (const item of [...items.value]) {
-      cartStore.addItem({
-        variante_id: item.variante_id,
-        sku: item.sku || 'SKU-ITEM',
-        nombre: item.nombre || 'Producto',
-        cantidad: 1,
-        precio_unitario: item.precio || 0
-      });
-      eliminarDeseo(item.variante_id, clienteId);
+      if (await moverAlCarrito(item.variante_id, clienteId)) count++;
     }
 
     return count;

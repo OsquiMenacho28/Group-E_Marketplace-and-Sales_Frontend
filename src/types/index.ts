@@ -57,6 +57,7 @@ export interface ItemCarrito {
   nombre: string;
   cantidad: number;
   precio_unitario: number;
+  stock_disponible?: number;
   total_linea: number;
 }
 
@@ -305,7 +306,7 @@ export interface ListaPrecio {
 }
 
 export interface PrecioResolucion {
-  lista_precio_id: string;
+  lista_precio_id?: string | null;
   lista_nombre: string;
   variante_id: string;
   precio: number;

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { apiClient } from '@/api/client';
+import { consultarStock, resolverPrecioVariante } from '@/api/catalogo';
 import FiscalBillingForm from '@/components/FiscalBillingForm.vue';
 import QuickStockModal from '@/components/QuickStockModal.vue';
 import { usePosSyncStore } from '@/stores/posSync';
@@ -38,10 +39,115 @@ const skuInput = ref('');
 const cajaAbierta = ref(true);
 const cajaId = ref<string | null>(null);
 const sucursalId = crypto.randomUUID();
+const sucursalListaPrecioId = 'SUC-LP-CENTRAL';
 const cajeroId = crypto.randomUUID();
 const sucursalNombre = ref('Sucursal Central - La Paz');
 const cajeroNombre = ref('Cajero: Oscar Menacho (Turno Mañana)');
 const catalogoDb = ref<Producto[]>([]);
+const stockBySku = ref<Record<string, number>>({});
+const tipoClientePos = ref<'retail' | 'corporativo_b2b'>('retail');
+const isAddingItem = ref(false);
+const isSuggestionsOpen = ref(false);
+const highlightedIndex = ref(0);
+
+interface PosSearchCandidate {
+  sku: string;
+  nombre: string;
+  precio: number;
+  searchText: string;
+}
+
+function normalizarTexto(texto: string) {
+  return texto.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+const searchCandidates = computed<PosSearchCandidate[]>(() => {
+  const candidates = new Map<string, PosSearchCandidate>();
+  for (const product of catalogoDb.value) {
+    candidates.set(product.sku, {
+      sku: product.sku,
+      nombre: product.nombre,
+      precio: Number(product.precio || 0),
+      searchText: normalizarTexto(`${product.nombre} ${product.sku} ${product.marca || ''}`)
+    });
+  }
+  for (const product of Object.values(posSyncStore.catalogoLocal)) {
+    if (!candidates.has(product.sku) && product.estado !== 'baja') {
+      candidates.set(product.sku, {
+        sku: product.sku,
+        nombre: product.nombre,
+        precio: Number(product.precio_referencia || 0),
+        searchText: normalizarTexto(`${product.nombre} ${product.sku}`)
+      });
+    }
+  }
+  return [...candidates.values()];
+});
+
+const suggestions = computed(() => {
+  const tokens = normalizarTexto(skuInput.value).split(/\s+/).filter(Boolean);
+  if (!tokens.length || skuInput.value.trim().length < 2) return [];
+  return searchCandidates.value
+    .filter(candidate => tokens.every(token => candidate.searchText.includes(token)))
+    .slice(0, 8);
+});
+
+watch(skuInput, () => {
+  highlightedIndex.value = 0;
+  isSuggestionsOpen.value = true;
+});
+
+// Resuelve SKU exacto (incluido el SKU de una variante) antes que coincidencias por nombre.
+function skuExacto(texto: string): string | null {
+  const buscado = texto.trim().toUpperCase();
+  const producto = catalogoDb.value.find(product =>
+    product.sku.toUpperCase() === buscado || product.variantes?.some(variant => variant.sku.toUpperCase() === buscado)
+  );
+  if (producto) return producto.sku;
+  return posSyncStore.buscarPorSku(buscado)?.sku ?? null;
+}
+
+function mostrarAviso(message: string) {
+  syncToast.value = { message, type: 'warn', timestamp: new Date().toLocaleTimeString() };
+}
+
+async function submitBusqueda() {
+  const texto = skuInput.value.trim();
+  if (!texto || isAddingItem.value) return;
+
+  const exacto = skuExacto(texto);
+  if (exacto) return agregarProducto(exacto);
+
+  if (isSuggestionsOpen.value && suggestions.value[highlightedIndex.value] && suggestions.value.length > 1) {
+    return agregarProducto(suggestions.value[highlightedIndex.value].sku);
+  }
+  if (suggestions.value.length === 1) return agregarProducto(suggestions.value[0].sku);
+  if (suggestions.value.length > 1) {
+    isSuggestionsOpen.value = true;
+    mostrarAviso(`Hay ${suggestions.value.length} productos que coinciden con "${texto}". Selecciona uno de la lista.`);
+    return;
+  }
+  if (searchCandidates.value.length === 0) return agregarProducto(texto.toUpperCase());
+  mostrarAviso(`No se encontró ningún producto con el SKU o nombre "${texto}".`);
+}
+
+function seleccionarSugerencia(candidate: PosSearchCandidate) {
+  isSuggestionsOpen.value = false;
+  void agregarProducto(candidate.sku);
+}
+
+function onSearchKeydown(event: KeyboardEvent) {
+  if (!isSuggestionsOpen.value || !suggestions.value.length) return;
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    highlightedIndex.value = (highlightedIndex.value + 1) % suggestions.value.length;
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    highlightedIndex.value = (highlightedIndex.value - 1 + suggestions.value.length) % suggestions.value.length;
+  } else if (event.key === 'Escape') {
+    isSuggestionsOpen.value = false;
+  }
+}
 
 // Control de Stock Multi-Sucursal y Sincronización SSE
 const isQuickStockOpen = ref(false);
@@ -113,16 +219,16 @@ async function manualSyncPos() {
 }
 
 function getItemStock(sku: string): number {
+  if (stockBySku.value[sku] !== undefined) return stockBySku.value[sku];
   const match = catalogoDb.value.find(p => p.sku === sku);
   if (match && match.stock !== undefined && match.stock !== null) {
     return Number(match.stock);
   }
-  return 12; // Valor estándar disponible en la sucursal activa
+  return 0;
 }
 
 function onSelectProductFromStockModal(sku: string) {
-  skuInput.value = sku;
-  addItemByBarcode();
+  void agregarProducto(sku);
 }
 
 // Cargar catálogo de Supabase para obtener precios reales al escanear
@@ -130,23 +236,33 @@ async function loadPosCatalog() {
   try {
     const res = await apiClient.get('/api/v1/catalogo/productos');
     catalogoDb.value = Array.isArray(res.data) ? res.data : (res.data as any)?.productos || [];
-    // Actualizar precios y variante_id de ítems iniciales según la BD
-    cartItems.value.forEach(item => {
-      const match = catalogoDb.value.find(p => p.sku === item.sku);
-      if (match) {
-        if (match.precio) item.precio = Number(match.precio);
-        item.variante_id = match.variante_id || match.variantes?.[0]?.id;
-      }
-    });
+    await Promise.allSettled(cartItems.value.map(actualizarPrecioYStockItem));
   } catch (err) {
     console.error('Error cargando catálogo en POS:', err);
   }
 }
 
-const cartItems = ref<PosItem[]>([
-  { id: '1', sku: 'LAP-DELL-XPS15', nombre: 'Laptop Dell XPS 15', precio: 6767.00, cantidad: 1, variante_id: '0f92a03b-df62-4916-ac39-4506b575d8af' },
-  { id: '2', sku: 'MOU-LOG-MX3S', nombre: 'Mouse Logitech MX Master 3S', precio: 8999.00, cantidad: 1, variante_id: 'e38572aa-a259-40ce-ac39-6e0a4e4fd2c2' }
-]);
+async function actualizarPrecioYStockItem(item: PosItem) {
+  const stock = await consultarStock(item.sku, sucursalListaPrecioId);
+  stockBySku.value[item.sku] = stock.stock_disponible;
+  const match = catalogoDb.value.find(product => product.sku === item.sku);
+  const varianteId = match?.variante_id || match?.variantes?.[0]?.id || match?.id || item.variante_id;
+  if (!varianteId) return;
+  item.variante_id = varianteId;
+  const resolution = await resolverPrecioVariante({
+    variante_id: varianteId,
+    canal: 'pos',
+    tipo_cliente: tipoClientePos.value,
+    sucursal_id: sucursalListaPrecioId
+  });
+  item.precio = Number(resolution.precio) * (resolution.moneda === 'USD' ? 6.96 : 1);
+}
+
+async function recalcularPreciosPos() {
+  await Promise.allSettled(cartItems.value.map(actualizarPrecioYStockItem));
+}
+
+const cartItems = ref<PosItem[]>([]);
 
 const suspendedSales = ref<{
   id: string;
@@ -198,32 +314,52 @@ async function abrirCaja() {
   }
 }
 
-function addItemByBarcode() {
-  if (!skuInput.value.trim()) return;
-  const sku = skuInput.value.trim().toUpperCase();
-  
-  // Buscar en el catálogo local sincronizado (RF-08) o catálogo Supabase
-  const localSync = posSyncStore.buscarPorSku(sku);
-  const match = catalogoDb.value.find(p => p.sku === sku);
-  const existing = cartItems.value.find(i => i.sku === sku);
+async function agregarProducto(sku: string) {
+  isAddingItem.value = true;
+  try {
+    const stock = await consultarStock(sku, sucursalListaPrecioId);
+    stockBySku.value[sku] = stock.stock_disponible;
+    const existing = cartItems.value.find(item => item.sku === sku);
+    if (stock.stock_disponible <= (existing?.cantidad || 0)) {
+      mostrarAviso(`Stock insuficiente para ${sku}. Disponibles: ${stock.stock_disponible}.`);
+      return;
+    }
 
-  if (existing) {
-    existing.cantidad += 1;
-  } else {
-    const itemPrecio = (localSync?.precio_referencia && localSync.precio_referencia > 0)
-      ? localSync.precio_referencia
-      : (match && match.precio ? Number(match.precio) : 150.00);
-
-    cartItems.value.push({
-      id: Date.now().toString(),
-      sku: sku,
-      nombre: match?.nombre || localSync?.nombre || `Artículo Escaneado [${sku}]`,
-      precio: itemPrecio,
-      cantidad: 1,
-      variante_id: match?.variante_id || match?.variantes?.[0]?.id
+    const localSync = posSyncStore.buscarPorSku(sku);
+    const match = catalogoDb.value.find(product => product.sku === sku);
+    const varianteId = match?.variante_id || match?.variantes?.[0]?.id || match?.id || localSync?.id;
+    if (!varianteId) {
+      mostrarAviso(`El producto ${sku} no existe en el catálogo. No se agregó al ticket.`);
+      return;
+    }
+    const resolution = await resolverPrecioVariante({
+      variante_id: varianteId,
+      canal: 'pos',
+      tipo_cliente: tipoClientePos.value,
+      sucursal_id: sucursalListaPrecioId
     });
+    const itemPrice = Number(resolution.precio) * (resolution.moneda === 'USD' ? 6.96 : 1);
+
+    if (existing) {
+      existing.cantidad += 1;
+      existing.precio = itemPrice;
+    } else {
+      cartItems.value.push({
+        id: Date.now().toString(),
+        sku,
+        nombre: match?.nombre || localSync?.nombre || `Artículo Escaneado [${sku}]`,
+        precio: itemPrice,
+        cantidad: 1,
+        variante_id: varianteId
+      });
+    }
+    skuInput.value = '';
+    isSuggestionsOpen.value = false;
+  } catch {
+    mostrarAviso(`No se pudo verificar el stock o precio de ${sku}. No se agregó al ticket.`);
+  } finally {
+    isAddingItem.value = false;
   }
-  skuInput.value = '';
 }
 
 function removeItem(id: string) {
@@ -324,6 +460,10 @@ async function reanudarVenta(index: number) {
 
 // Emisión oficial de factura legal electrónica (KAN-367)
 async function finalizarCobro() {
+  if (cartItems.value.length === 0) {
+    emitInvoiceError.value = 'Agrega productos al ticket antes de cobrar.';
+    return;
+  }
   if (!isFiscalValid.value && fiscalData.value.modalidad === 'con_factura') {
     emitInvoiceError.value = 'Por favor verifica el NIT/CI y la Razón Social antes de procesar el cobro.';
     return;
@@ -333,6 +473,22 @@ async function finalizarCobro() {
   emitInvoiceError.value = '';
 
   try {
+    for (const item of cartItems.value) {
+      const stock = await consultarStock(item.sku, sucursalListaPrecioId);
+      stockBySku.value[item.sku] = stock.stock_disponible;
+      if (item.cantidad > stock.stock_disponible) {
+        throw new Error(`Stock insuficiente para ${item.nombre}. Disponibles: ${stock.stock_disponible}.`);
+      }
+      if (!item.variante_id) throw new Error(`No se pudo identificar el producto ${item.nombre}.`);
+      const resolution = await resolverPrecioVariante({
+        variante_id: item.variante_id,
+        canal: 'pos',
+        tipo_cliente: tipoClientePos.value,
+        sucursal_id: sucursalListaPrecioId
+      });
+      item.precio = Number(resolution.precio) * (resolution.moneda === 'USD' ? 6.96 : 1);
+    }
+
     const res = await apiClient.post('/v1/facturacion/emitir', {
       modalidad: fiscalData.value.modalidad,
       tipo_documento: fiscalData.value.tipo_documento,
@@ -350,7 +506,7 @@ async function finalizarCobro() {
     facturaEmitida.value = res.data.factura;
     isReceiptReady.value = true;
   } catch (err: any) {
-    emitInvoiceError.value = err.response?.data?.error || 'Error al emitir factura electrónica con el microservicio.';
+    emitInvoiceError.value = err.response?.data?.detail || err.response?.data?.error || err.message || 'Error al emitir factura electrónica con el microservicio.';
   } finally {
     isEmittingInvoice.value = false;
   }
@@ -432,6 +588,13 @@ onUnmounted(() => {
         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
           <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Caja Abierta
         </span>
+        <label class="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs font-semibold text-slate-300">
+          Cliente
+          <select v-model="tipoClientePos" @change="recalcularPreciosPos" class="bg-transparent text-white outline-none">
+            <option value="retail" class="text-slate-900">Retail</option>
+            <option value="corporativo_b2b" class="text-slate-900">Corporativo B2B</option>
+          </select>
+        </label>
         <button class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 font-medium">
           Arqueo / Cierre
         </button>
@@ -463,19 +626,53 @@ onUnmounted(() => {
       <!-- Columna Izquierda: Escáner y Tabla de Ítems -->
       <div class="lg:col-span-2 flex flex-col min-h-[520px] bg-white/95 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-lg shadow-slate-300/20 dark:shadow-none p-4 overflow-hidden">
         <!-- Input Barcode -->
-        <form @submit.prevent="addItemByBarcode" class="flex gap-2 mb-4">
+        <form @submit.prevent="submitBusqueda" class="flex gap-2 mb-4">
           <div class="relative flex-1">
             <Scan class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               v-model="skuInput"
               type="text"
               autofocus
-              placeholder="Escanear código de barras o escribir SKU y presionar ENTER..."
+              role="combobox"
+              aria-autocomplete="list"
+              aria-controls="pos-sugerencias"
+              :aria-expanded="isSuggestionsOpen && suggestions.length > 0"
+              :aria-activedescendant="isSuggestionsOpen && suggestions.length ? `pos-sugerencia-${highlightedIndex}` : undefined"
+              placeholder="Escanear código, escribir SKU o nombre del producto y presionar ENTER..."
               class="w-full pl-10 pr-4 py-2.5 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-600 focus:outline-none font-mono"
+              @keydown="onSearchKeydown"
+              @focus="isSuggestionsOpen = true"
+              @blur="isSuggestionsOpen = false"
             />
+            <ul
+              v-if="isSuggestionsOpen && suggestions.length"
+              id="pos-sugerencias"
+              role="listbox"
+              class="absolute left-0 right-0 top-full z-30 mt-1 max-h-72 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+            >
+              <li
+                v-for="(candidate, index) in suggestions"
+                :id="`pos-sugerencia-${index}`"
+                :key="candidate.sku"
+                role="option"
+                :aria-selected="index === highlightedIndex"
+                :class="[
+                  'flex cursor-pointer items-center justify-between gap-3 px-3 py-2 text-sm',
+                  index === highlightedIndex ? 'bg-blue-50 dark:bg-blue-950/50' : 'hover:bg-slate-50 dark:hover:bg-slate-800'
+                ]"
+                @mousedown.prevent="seleccionarSugerencia(candidate)"
+                @mouseenter="highlightedIndex = index"
+              >
+                <span class="min-w-0">
+                  <span class="block truncate font-semibold text-slate-800 dark:text-slate-100">{{ candidate.nombre }}</span>
+                  <span class="block font-mono text-xs text-slate-400">{{ candidate.sku }}</span>
+                </span>
+                <span class="shrink-0 text-xs font-bold text-slate-600 dark:text-slate-300">BOB {{ candidate.precio.toFixed(2) }}</span>
+              </li>
+            </ul>
           </div>
-          <button type="submit" class="bg-teal-700 hover:bg-teal-800 text-white px-5 py-2.5 rounded-lg font-bold text-sm shadow-sm">
-            Agregar
+          <button type="submit" :disabled="isAddingItem" class="bg-teal-700 hover:bg-teal-800 disabled:opacity-50 text-white px-5 py-2.5 rounded-lg font-bold text-sm shadow-sm">
+            {{ isAddingItem ? 'Verificando...' : 'Agregar' }}
           </button>
           <button 
             type="button" 

@@ -6,6 +6,7 @@ import { apiClient } from '@/api/client';
 import type { FacetasCatalogo, SugerenciaItem, MarketplaceProduct } from '@/types';
 import { useWishlistStore } from '@/stores/wishlist';
 import { useAuthStore } from '@/stores/auth';
+import { consultarStock, resolverPreciosLote } from '@/api/catalogo';
 import { Sparkles, ShieldCheck, Search, RotateCcw } from 'lucide-vue-next';
 
 // Subcomponentes modulares
@@ -195,8 +196,8 @@ function mapDbProductToMarketplace(dbp: any): MarketplaceProduct {
     marca: dbp.marca || 'MaxiConecta',
     precio: realPrice > 0 ? realPrice : 999.00,
     rating: 4.8,
-    stock: dbp.stock ?? 10,
-    badge: realPrice > 8000 ? 'Pro' : (dbp.stock < 5 ? 'Pocas unidades' : 'Disponible'),
+    stock: dbp.stock == null ? -1 : Number(dbp.stock),
+    badge: realPrice > 8000 ? 'Pro' : (dbp.stock == null ? 'Consultar stock' : (dbp.stock < 5 ? 'Pocas unidades' : 'Disponible')),
     image: cover?.url || (dbp.imagenes && dbp.imagenes[0]) || 'https://images.unsplash.com/photo-1526738549149-8e07eca6c147?auto=format&fit=crop&w=600&q=80',
     galleryImages: gallery,
     atributos: atributos,
@@ -324,6 +325,11 @@ watch(
   }
 );
 
+watch(
+  () => [authStore.user?.tipo_cliente, authStore.user?.sucursal_id],
+  () => ejecutarBusqueda()
+);
+
 onMounted(() => {
   leerFiltrosDeUrl();
   ejecutarBusqueda();
@@ -367,15 +373,41 @@ async function fetchRecommendations(targetProdId?: string, catId?: string) {
     if (catId) params.categoria_id = catId;
     const res = await apiClient.get('/api/v1/catalogo/recomendaciones', { params });
     if (res.data && Array.isArray(res.data) && res.data.length > 0) {
-      recommendedProducts.value = res.data.map(mapDbProductToMarketplace);
+      recommendedProducts.value = await applyResolvedPrices(res.data.map(mapDbProductToMarketplace));
     } else {
-      recommendedProducts.value = fallbackProducts.slice(0, 4);
+      recommendedProducts.value = await applyResolvedPrices(fallbackProducts.slice(0, 4));
     }
   } catch {
-    recommendedProducts.value = fallbackProducts.slice(0, 4);
+    recommendedProducts.value = await applyResolvedPrices(fallbackProducts.slice(0, 4));
   } finally {
     isLoadingRecommendations.value = false;
   }
+}
+
+async function applyResolvedPrices(productsToPrice: MarketplaceProduct[]): Promise<MarketplaceProduct[]> {
+  const tipoCliente = authStore.user?.tipo_cliente === 'corporativo_b2b'
+    ? 'corporativo_b2b'
+    : 'retail';
+  const sucursalId = authStore.user?.sucursal_id || undefined;
+  if (productsToPrice.length === 0) return productsToPrice;
+
+  try {
+    const resolutions = await resolverPreciosLote({
+      variante_ids: productsToPrice.map(product => product.id),
+      canal: 'web',
+      tipo_cliente: tipoCliente,
+      sucursal_id: sucursalId
+    });
+    for (const product of productsToPrice) {
+      const resolution = resolutions[product.id];
+      if (resolution) {
+        product.precio = Number(resolution.precio) * (resolution.moneda === 'USD' ? 6.96 : 1);
+      }
+    }
+  } catch {
+    // Mantener el precio base del catálogo si el resolutor no está disponible.
+  }
+  return productsToPrice;
 }
 
 function selectSuggestion(item: SugerenciaItem) {
@@ -435,18 +467,18 @@ async function ejecutarBusqueda() {
         total_general: data.items.length
       };
 
-      products.value = data.items.map(mapDbProductToMarketplace);
+      products.value = await applyResolvedPrices(data.items.map(mapDbProductToMarketplace));
       catalogUpdatedAt.value = new Date().toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' });
     }
   } catch (err) {
     console.warn('Aviso: backend no disponible, ejecutando motor facetado en memoria local:', err);
-    aplicarFiltrosLocales();
+    await aplicarFiltrosLocales();
   } finally {
     isSearching.value = false;
   }
 }
 
-function aplicarFiltrosLocales() {
+async function aplicarFiltrosLocales() {
   const normQ = debouncedQuery.value.toLowerCase();
   let filtered = [...fallbackProducts];
 
@@ -522,7 +554,7 @@ function aplicarFiltrosLocales() {
     filtered.sort((a, b) => a.nombre.localeCompare(b.nombre));
   }
 
-  products.value = filtered;
+  products.value = await applyResolvedPrices(filtered);
   totalCoincidencias.value = filtered.length;
 }
 
@@ -617,14 +649,22 @@ function openProductGallery(prod: MarketplaceProduct) {
   activeGalleryProduct.value = prod;
 }
 
-function agregarAlCarrito(prod: MarketplaceProduct) {
-  cartStore.addItem({
-    variante_id: prod.id,
-    sku: prod.sku,
-    nombre: prod.nombre,
-    cantidad: 1,
-    precio_unitario: prod.precio
-  });
+async function agregarAlCarrito(prod: MarketplaceProduct) {
+  try {
+    const stock = await consultarStock(prod.sku);
+    products.value.filter(p => p.sku === prod.sku).forEach(p => { p.stock = stock.stock_disponible; });
+    cartStore.addItem({
+      variante_id: prod.id,
+      sku: prod.sku,
+      nombre: prod.nombre,
+      cantidad: 1,
+      precio_unitario: prod.precio,
+      stock_disponible: stock.stock_disponible
+    });
+  } catch {
+    cartStore.error = `No se pudo verificar el stock de ${prod.nombre}. Inténtalo nuevamente.`;
+    cartStore.openDrawer();
+  }
 }
 
 function alternarDeseo(prod: MarketplaceProduct) {

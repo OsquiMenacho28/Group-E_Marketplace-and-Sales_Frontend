@@ -4,7 +4,6 @@ import { useRoute } from 'vue-router';
 import { useCartStore } from '@/stores/cart';
 import { useAuthStore } from '@/stores/auth';
 import { useWishlistStore } from '@/stores/wishlist';
-import { apiClient } from '@/api/client';
 import AuthModal from '@/components/auth/AuthModal.vue';
 import CheckoutModal from '@/components/checkout/CheckoutModal.vue';
 import { 
@@ -43,6 +42,24 @@ watch(
   }
 );
 
+watch(
+  () => cartStore.isDrawerOpen,
+  (isOpen) => {
+    if (isOpen) void cartStore.refreshStock();
+  }
+);
+
+watch(
+  () => cartStore.isCheckoutModalOpen,
+  (isOpen) => {
+    if (isOpen && !authStore.user?.id) {
+      void cartStore.cancelarReserva();
+      authStore.openAuthModal('login');
+    }
+  },
+  { immediate: true }
+);
+
 const cuponInput = ref('');
 const cuponMsg = ref('');
 const checkoutMsg = ref('');
@@ -57,32 +74,19 @@ async function canjearCupon() {
   }
 }
 
-async function iniciarCheckout() {
-  if (!authStore.user?.id) {
-    authStore.openAuthModal('login');
-    checkoutMsg.value = 'Inicia sesión para reservar el stock antes del pago.';
-    return;
-  }
-  checkoutMsg.value = '';
-  try {
-    const response = await apiClient.post(`/api/v1/carrito/${cartStore.sessionId}/checkout/iniciar`, {
-      cliente_id: authStore.user.id,
-      metodo_pago: 'tarjeta',
-      tipo_despacho: 'domicilio'
-    });
-    checkoutMsg.value = `Stock reservado por ${Math.floor(response.data.ttl_expira_en_segundos / 60)} minutos.`;
-  } catch (error: any) {
-    checkoutMsg.value = error.response?.data?.detail || 'No fue posible reservar el stock.';
-  }
-}
-
 function handleLogout() {
   authStore.logout();
   isUserMenuOpen.value = false;
 }
 
 function handleIniciarCheckout() {
-  const clienteId = authStore.user?.id || 'cliente-anonimo';
+  const clienteId = authStore.user?.id;
+  if (!clienteId) {
+    checkoutMsg.value = 'Inicia sesión para reservar el stock y continuar al checkout.';
+    authStore.openAuthModal('login');
+    return;
+  }
+  checkoutMsg.value = '';
   cartStore.iniciarCheckoutConReserva(clienteId);
 }
 </script>
@@ -360,8 +364,9 @@ function handleIniciarCheckout() {
                 <div class="flex items-center gap-2 mt-2">
                   <button @click="cartStore.updateQuantity(item.variante_id, -1)" class="w-6 h-6 rounded bg-slate-200 dark:bg-slate-700 text-xs font-bold">-</button>
                   <span class="text-xs font-bold px-1">{{ item.cantidad }}</span>
-                  <button @click="cartStore.updateQuantity(item.variante_id, 1)" class="w-6 h-6 rounded bg-slate-200 dark:bg-slate-700 text-xs font-bold">+</button>
+                  <button @click="cartStore.updateQuantity(item.variante_id, 1)" :disabled="!cartStore.canIncrease(item)" class="w-6 h-6 rounded bg-slate-200 dark:bg-slate-700 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed" :title="cartStore.canIncrease(item) ? 'Aumentar cantidad' : `Máximo disponible: ${item.stock_disponible ?? 0}`">+</button>
                 </div>
+                <span v-if="item.stock_disponible !== undefined" class="mt-1 block text-[10px] text-slate-400">{{ item.stock_disponible }} disponibles</span>
               </div>
 
               <div class="flex flex-col justify-between items-end">
