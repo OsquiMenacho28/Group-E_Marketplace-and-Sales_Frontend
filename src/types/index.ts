@@ -83,6 +83,17 @@ export interface UserProfile {
   mensaje?: string;
 }
 
+export interface DireccionCliente {
+  id: string;
+  cliente_id: string;
+  direccion: string;
+  referencia?: string | null;
+  ciudad: string;
+  latitud?: number | null;
+  longitud?: number | null;
+  es_predeterminada: boolean;
+}
+
 export interface AuthResponse {
   access_token: string;
   refresh_token: string;
