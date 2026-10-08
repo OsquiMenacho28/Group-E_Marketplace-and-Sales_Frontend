@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { apiClient } from '@/api/client';
 import type { Producto } from '@/types';
+import { useAuthStore } from '@/stores/auth';
 import { 
   Scan, 
   Trash2, 
@@ -17,17 +18,48 @@ import {
 
 interface PosItem {
   id: string;
+  variante_id: string;
   sku: string;
   nombre: string;
   precio: number;
   cantidad: number;
 }
 
+interface TicketEmitido {
+  orden_id: string;
+  codigo_orden: string;
+  subtotal_neto: number;
+  monto_iva: number;
+  total: number;
+  metodo_pago: string;
+  numero_factura: number;
+  cuf: string;
+  cufd?: string | null;
+  qr_url: string;
+  qr_code: string;
+  items: Array<{
+    sku: string;
+    nombre: string;
+    cantidad: number;
+    precio_unitario: number;
+    total_linea: number;
+  }>;
+  ticket_impresion: string;
+}
+
+const authStore = useAuthStore();
 const skuInput = ref('');
-const cajaAbierta = ref(true);
+const cajaAbierta = ref(false);
+const cajaId = ref<string | null>(null);
+const sucursalId = crypto.randomUUID();
+const cajeroId = authStore.user?.id || crypto.randomUUID();
 const sucursalNombre = ref('Sucursal Central - La Paz');
 const cajeroNombre = ref('Cajero: Oscar Menacho (Turno Mañana)');
 const catalogoDb = ref<Producto[]>([]);
+const cajaError = ref('');
+const cobroError = ref('');
+const isProcessingPayment = ref(false);
+const ticketEmitido = ref<TicketEmitido | null>(null);
 
 // Cargar catálogo de Supabase para obtener precios reales al escanear
 async function loadPosCatalog() {
@@ -48,17 +80,17 @@ async function loadPosCatalog() {
 
 onMounted(() => {
   loadPosCatalog();
+  abrirCaja();
 });
 
-const cartItems = ref<PosItem[]>([
-  { id: '1', sku: 'LAP-DELL-XPS15', nombre: 'Laptop Dell XPS 15', precio: 8999.00, cantidad: 1 },
-  { id: '2', sku: 'MOU-LOG-MX3S', nombre: 'Mouse Logitech MX Master 3S', precio: 799.00, cantidad: 2 }
-]);
+const cartItems = ref<PosItem[]>([]);
 
 const suspendedSales = ref<{ id: string; ticket: string; total: number; items: PosItem[] }[]>([]);
 
 const subtotal = computed(() => cartItems.value.reduce((acc, curr) => acc + (curr.precio * curr.cantidad), 0));
 const total = computed(() => subtotal.value);
+const montoIva = computed(() => Math.round((total.value * 13 / 113) * 100) / 100);
+const subtotalNeto = computed(() => Math.round((total.value - montoIva.value) * 100) / 100);
 
 // Modal de Cobro
 const isPayModalOpen = ref(false);
@@ -67,22 +99,51 @@ const cashGiven = ref<number>(11000);
 const changeDue = computed(() => Math.max(0, (cashGiven.value || 0) - total.value));
 const isReceiptReady = ref(false);
 
+async function abrirCaja() {
+  try {
+    const { data } = await apiClient.post('/api/v1/pos/caja/abrir', {
+      sucursal_id: sucursalId,
+      cajero_id: cajeroId,
+      fondo_inicial: 0
+    });
+    cajaId.value = data.id;
+    cajaAbierta.value = data.estado === 'abierta';
+    cajaError.value = '';
+  } catch (error: any) {
+    cajaError.value = error.response?.data?.detail || 'No se pudo abrir la caja. Inicia sesión con un usuario autorizado.';
+    cajaAbierta.value = false;
+  }
+}
+
 function addItemByBarcode() {
   if (!skuInput.value.trim()) return;
   const sku = skuInput.value.trim().toUpperCase();
   
   // Buscar en el catálogo real de Supabase
-  const match = catalogoDb.value.find(p => p.sku === sku);
-  const existing = cartItems.value.find(i => i.sku === sku);
+  const match = catalogoDb.value.find(product =>
+    product.sku.toUpperCase() === sku || product.variantes?.some(variant => variant.sku.toUpperCase() === sku)
+  );
+  if (!match) {
+    cobroError.value = `No se encontró el producto con SKU ${sku}.`;
+    return;
+  }
+  const variant = match.variantes?.find(item => item.sku.toUpperCase() === sku) || match.variantes?.[0];
+  if (!variant) {
+    cobroError.value = `El producto ${sku} no tiene una variante facturable.`;
+    return;
+  }
+  const skuVariante = variant.sku || match.sku;
+  const existing = cartItems.value.find(i => i.sku === skuVariante);
 
   if (existing) {
     existing.cantidad += 1;
   } else {
     cartItems.value.push({
       id: Date.now().toString(),
-      sku: sku,
-      nombre: match ? match.nombre : `Artículo Escaneado [${sku}]`,
-      precio: match && match.precio ? Number(match.precio) : 150.00,
+      variante_id: variant.id,
+      sku: skuVariante,
+      nombre: variant.nombre_variante && (match.variantes?.length ?? 0) > 1 ? `${match.nombre} · ${variant.nombre_variante}` : match.nombre,
+      precio: Number(variant.precio || match.precio || 0),
       cantidad: 1
     });
   }
@@ -109,14 +170,51 @@ function reanudarVenta(index: number) {
   cartItems.value = sale.items;
 }
 
-function finalizarCobro() {
-  isReceiptReady.value = true;
+async function finalizarCobro() {
+  if (!cajaId.value || !cajaAbierta.value) {
+    cobroError.value = 'No hay una caja abierta. Vuelve a abrir la caja antes de cobrar.';
+    return;
+  }
+  if (payMethod.value === 'efectivo' && cashGiven.value < total.value) {
+    cobroError.value = 'El monto recibido no cubre el total de la venta.';
+    return;
+  }
+  isProcessingPayment.value = true;
+  cobroError.value = '';
+  try {
+    const { data } = await apiClient.post<TicketEmitido>('/api/v1/pos/ventas/cobrar', {
+      caja_id: cajaId.value,
+      sucursal_id: sucursalId,
+      cliente_nit_ci: '0',
+      cliente_razon_social: 'CONSUMIDOR FINAL',
+      items: cartItems.value.map(item => ({
+        variante_id: item.variante_id,
+        sku: item.sku,
+        nombre: item.nombre,
+        cantidad: item.cantidad,
+        precio_unitario: item.precio
+      })),
+      metodo_pago: payMethod.value
+    });
+    ticketEmitido.value = data;
+    isReceiptReady.value = true;
+  } catch (error: any) {
+    cobroError.value = error.response?.data?.detail || 'No se pudo emitir el ticket tributario. No se confirmó el cobro.';
+  } finally {
+    isProcessingPayment.value = false;
+  }
+}
+
+function imprimirTicket() {
+  window.print();
 }
 
 function resetPos() {
   cartItems.value = [];
   isPayModalOpen.value = false;
   isReceiptReady.value = false;
+  ticketEmitido.value = null;
+  cobroError.value = '';
 }
 </script>
 
@@ -134,13 +232,15 @@ function resetPos() {
       </div>
       <div class="relative flex items-center gap-3">
         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Caja Abierta
+          <span class="w-2 h-2 rounded-full" :class="cajaAbierta ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'"></span>
+          {{ cajaAbierta ? 'Caja Abierta' : 'Caja Cerrada' }}
         </span>
         <button class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 font-medium">
           Arqueo / Cierre
         </button>
       </div>
     </div>
+    <p v-if="cajaError" role="alert" class="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-semibold text-rose-700">{{ cajaError }}</p>
 
     <!-- Contenido Principal POS -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -232,12 +332,12 @@ function resetPos() {
               <span class="font-bold text-slate-800 dark:text-slate-200">{{ cartItems.reduce((a, c) => a + c.cantidad, 0) }}</span>
             </div>
             <div class="flex justify-between">
-              <span>Subtotal:</span>
-              <span>BOB {{ subtotal.toFixed(2) }}</span>
+              <span>Subtotal neto:</span>
+              <span>BOB {{ subtotalNeto.toFixed(2) }}</span>
             </div>
             <div class="flex justify-between">
-              <span>Impuestos (IVA 13% incluido):</span>
-              <span>BOB {{ (total * 0.13).toFixed(2) }}</span>
+              <span>IVA (13% incluido):</span>
+              <span>BOB {{ montoIva.toFixed(2) }}</span>
             </div>
           </div>
 
@@ -276,6 +376,7 @@ function resetPos() {
       <div class="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-5">
         <div v-if="!isReceiptReady" class="space-y-4">
           <h3 class="text-lg font-bold text-slate-800 dark:text-white">Procesar Cobro en Caja</h3>
+          <p v-if="cobroError" role="alert" class="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-700">{{ cobroError }}</p>
           
           <!-- Método de Pago -->
           <div class="grid grid-cols-3 gap-3">
@@ -317,29 +418,58 @@ function resetPos() {
 
           <div class="flex justify-end gap-3 pt-2">
             <button @click="isPayModalOpen = false" class="px-4 py-2 text-sm text-slate-500 font-medium">Cancelar</button>
-            <button @click="finalizarCobro" class="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-lg">
-              Confirmar e Imprimir Factura
+            <button @click="finalizarCobro" :disabled="isProcessingPayment || !cajaAbierta" class="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-sm rounded-lg">
+              {{ isProcessingPayment ? 'Timbrando factura...' : 'Confirmar y emitir factura' }}
             </button>
           </div>
         </div>
 
-        <!-- Ticket Emitido y Timbrado CUF (RF-10, RIO-PAG-02) -->
-        <div v-else class="space-y-4 text-center">
-          <div class="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto">
-            <CheckCircle class="w-6 h-6" />
+        <div v-else-if="ticketEmitido" class="space-y-4">
+          <div class="text-center">
+            <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+              <CheckCircle class="h-6 w-6" />
+            </div>
+            <h3 class="mt-2 text-lg font-bold text-slate-900 dark:text-white">Factura emitida y timbrada</h3>
           </div>
-          <h3 class="text-lg font-bold text-slate-900 dark:text-white">¡Venta y Factura Electrónica Emitidas!</h3>
-          <p class="text-xs text-slate-500">
-            Factura timbrada con código CUF: <code class="font-mono bg-slate-100 p-1 rounded">CUF-9F2A-881B-2026</code>
-          </p>
-          <div class="p-3 bg-slate-50 dark:bg-slate-800 rounded-lg text-left text-xs font-mono">
-            <div>Orden: POS-A8B9</div>
-            <div>Total: BOB {{ total.toFixed(2) }}</div>
-            <div>Método: {{ payMethod.toUpperCase() }}</div>
-          </div>
-          <div class="flex justify-center gap-3">
-            <button @click="resetPos" class="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg flex items-center gap-2">
-              <Printer class="w-4 h-4" /> Imprimir Ticket y Nueva Venta
+          <article id="pos-ticket-print" class="mx-auto max-h-[55vh] w-full max-w-[72mm] overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 font-mono text-[10px] text-black shadow-sm">
+            <header class="text-center">
+              <h4 class="text-sm font-black">MAXICONECTA</h4>
+              <p>{{ sucursalNombre }}</p>
+              <p>FACTURA ELECTRÓNICA</p>
+              <p>No. {{ ticketEmitido.numero_factura }}</p>
+            </header>
+            <div class="my-2 border-t border-dashed border-black"></div>
+            <p>Orden: {{ ticketEmitido.codigo_orden }}</p>
+            <p>Fecha: {{ new Date().toLocaleString('es-BO') }}</p>
+            <p>NIT/CI: 0</p>
+            <p>Cliente: CONSUMIDOR FINAL</p>
+            <div class="my-2 border-t border-dashed border-black"></div>
+            <div v-for="item in ticketEmitido.items" :key="item.sku" class="mb-2">
+              <p class="break-words font-bold">{{ item.nombre }}</p>
+              <div class="flex justify-between gap-2">
+                <span>{{ item.cantidad }} x {{ item.precio_unitario.toFixed(2) }}</span>
+                <span>{{ item.total_linea.toFixed(2) }}</span>
+              </div>
+              <p class="text-[9px]">SKU: {{ item.sku }}</p>
+            </div>
+            <div class="my-2 border-t border-dashed border-black"></div>
+            <div class="flex justify-between"><span>Subtotal neto</span><span>BOB {{ ticketEmitido.subtotal_neto.toFixed(2) }}</span></div>
+            <div class="flex justify-between"><span>IVA 13% incluido</span><span>BOB {{ ticketEmitido.monto_iva.toFixed(2) }}</span></div>
+            <div class="mt-1 flex justify-between text-xs font-black"><span>TOTAL</span><span>BOB {{ ticketEmitido.total.toFixed(2) }}</span></div>
+            <p class="mt-1">Pago: {{ ticketEmitido.metodo_pago.toUpperCase() }}</p>
+            <div class="my-2 border-t border-dashed border-black"></div>
+            <p class="break-all text-[8px]">CUF: {{ ticketEmitido.cuf }}</p>
+            <div class="mt-3 flex flex-col items-center text-center">
+              <img :src="ticketEmitido.qr_code" alt="QR tributario de verificación" class="h-36 w-36" />
+              <p class="mt-1 text-[8px]">Escanea para verificar en el SIN</p>
+            </div>
+          </article>
+          <div class="flex flex-wrap justify-center gap-2">
+            <button @click="imprimirTicket" class="inline-flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2.5 text-xs font-bold text-white hover:bg-slate-700">
+              <Printer class="h-4 w-4" /> Imprimir ticket 80 mm
+            </button>
+            <button @click="resetPos" class="rounded-lg bg-blue-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-blue-700">
+              Nueva venta
             </button>
           </div>
         </div>
@@ -347,3 +477,37 @@ function resetPos() {
     </div>
   </div>
 </template>
+
+<style>
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 4mm;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  #pos-ticket-print,
+  #pos-ticket-print * {
+    visibility: visible !important;
+  }
+
+  #pos-ticket-print {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    display: block !important;
+    width: 72mm !important;
+    max-width: 72mm !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+    box-shadow: none !important;
+    color: black !important;
+  }
+}
+</style>
