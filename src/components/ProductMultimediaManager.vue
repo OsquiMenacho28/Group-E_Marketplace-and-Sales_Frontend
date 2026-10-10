@@ -58,7 +58,7 @@ async function loadImagenes() {
   isLoading.value = true;
   errorMsg.value = null;
   try {
-    const res = await apiClient.get(`/api/v1/catalogo/productos/${props.producto.id}/imagenes`);
+    const res = await apiClient.get(`/productos/${props.producto.id}/imagenes`);
     imagenes.value = res.data.imagenes || [];
   } catch (err: any) {
     console.error('Error cargando imágenes:', err);
@@ -141,7 +141,7 @@ async function uploadFiles(files: File[]) {
   });
 
   try {
-    const res = await apiClient.post(`/api/v1/catalogo/productos/${props.producto.id}/imagenes`, formData, {
+    const res = await apiClient.post(`/productos/${props.producto.id}/imagenes`, formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
       },
@@ -174,7 +174,7 @@ async function setPrincipal(img: ImagenProducto) {
   if (img.es_principal || !props.producto?.id) return;
   errorMsg.value = null;
   try {
-    await apiClient.patch(`/api/v1/catalogo/productos/${props.producto.id}/imagenes/${img.id}/principal`);
+    await apiClient.patch(`/productos/${props.producto.id}/imagenes/${img.id}/principal`);
     // Actualizar estado local inmediatamente
     imagenes.value.forEach(i => {
       i.es_principal = (i.id === img.id);
@@ -197,7 +197,7 @@ async function executeDelete() {
   isDeleting.value = true;
   errorMsg.value = null;
   try {
-    await apiClient.delete(`/api/v1/catalogo/productos/${props.producto.id}/imagenes/${imageToDelete.value.id}`);
+    await apiClient.delete(`/productos/${props.producto.id}/imagenes/${imageToDelete.value.id}`);
     successMsg.value = 'Recurso multimedia eliminado de Supabase Storage y catálogo.';
     imageToDelete.value = null;
     await loadImagenes();
@@ -249,7 +249,7 @@ async function saveOrder() {
       id: img.id,
       orden: idx
     }));
-    await apiClient.put(`/api/v1/catalogo/productos/${props.producto.id}/imagenes/reordenar`, { ordenes });
+    await apiClient.put(`/productos/${props.producto.id}/imagenes/reordenar`, { ordenes });
     successMsg.value = 'Nuevo orden de la galería guardado exitosamente.';
     emit('updated', props.producto.id);
   } catch (err: any) {
@@ -285,7 +285,7 @@ async function saveOrder() {
             </span>
           </div>
           <p class="text-xs text-slate-500 mt-0.5">
-            Sube imágenes de alta calidad, ajusta el orden visual y define la portada principal.
+            RF-03: Carga, optimización WebP, generación de thumbnails y reordenamiento con Supabase Storage.
           </p>
         </div>
       </div>
