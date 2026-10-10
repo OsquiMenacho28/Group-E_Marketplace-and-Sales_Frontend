@@ -1,480 +1,859 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { useCartStore } from '@/stores/cart';
 import { apiClient } from '@/api/client';
-import type { Producto } from '@/types';
+import type { FacetasCatalogo, SugerenciaItem, MarketplaceProduct } from '@/types';
 import { useWishlistStore } from '@/stores/wishlist';
-import { 
-  Search, 
-  ShoppingBag, 
-  Filter, 
-  CheckCircle2, 
-  Star, 
-  ShieldCheck, 
-  Tag, 
-  Eye, 
-  X, 
-  ChevronLeft, 
-  ChevronRight,
-  Layers,
-  Sparkles,
-  Heart,
-  RefreshCw,
-  Clock3
-} from 'lucide-vue-next';
+import { useAuthStore } from '@/stores/auth';
+import { consultarStock, resolverPreciosLote } from '@/api/catalogo';
+import { Sparkles, ShieldCheck, Search, RotateCcw } from 'lucide-vue-next';
 
+// Subcomponentes modulares
+import MarketplaceSearchBar from '@/components/marketplace/MarketplaceSearchBar.vue';
+import MarketplaceFacetSidebar from '@/components/marketplace/MarketplaceFacetSidebar.vue';
+import ProductCard from '@/components/marketplace/ProductCard.vue';
+import ProductGalleryModal from '@/components/marketplace/ProductGalleryModal.vue';
+
+const route = useRoute();
+const router = useRouter();
 const cartStore = useCartStore();
-
 const wishlistStore = useWishlistStore();
+const authStore = useAuthStore();
 
+// -----------------------------------------------------------------------------
+// ESTADO DE BÚSQUEDA Y FILTROS FACETADOS (RF-06 / US-06)
+// -----------------------------------------------------------------------------
 const searchQuery = ref('');
-const selectedCategory = ref('Todos');
-const categories = ref<string[]>(['Todos', 'Laptops y PCs', 'Periféricos', 'Monitores', 'Audio y Video']);
+const debouncedQuery = ref('');
+const isSearching = ref(false);
 const isSyncingCatalog = ref(false);
-const catalogUpdatedAt = ref('recién actualizado');
+const catalogUpdatedAt = ref('recién sincronizado');
+const showSuggestions = ref(false);
+const suggestions = ref<SugerenciaItem[]>([]);
 
-// Catálogo base con precios y ratings
-interface MarketplaceProduct {
-  id: string;
-  sku: string;
-  nombre: string;
-  categoria: string;
-  precio: number;
-  rating: number;
-  stock: number;
-  badge: string;
-  image: string;
-  variante_id?: string;
-  galleryImages: Array<{ id: string; url: string; es_principal: boolean; orden: number }>;
-}
+// Filtros facetados
+const selectedCategoryIds = ref<string[]>([]);
+const selectedBrands = ref<string[]>([]);
+const priceMinInput = ref<number | null>(null);
+const priceMaxInput = ref<number | null>(null);
+const appliedPriceMin = ref<number | null>(null);
+const appliedPriceMax = ref<number | null>(null);
+const onlyInStock = ref(false);
+const sortBy = ref<'relevancia' | 'precio_asc' | 'precio_desc' | 'nombre'>('relevancia');
 
-function getDefaultImageForCategory(catName?: string, prodName?: string): string {
-  const text = `${catName || ''} ${prodName || ''}`.toLowerCase();
-  if (text.includes('mouse') || text.includes('logitech') || text.includes('perifer')) {
-    return 'https://images.unsplash.com/photo-1615663245857-ac93bb7c39e7?auto=format&fit=crop&w=600&q=80';
-  }
-  if (text.includes('laptop') || text.includes('dell') || text.includes('pc') || text.includes('gamer')) {
-    return 'https://images.unsplash.com/photo-1593642632823-8f785ba67e45?auto=format&fit=crop&w=600&q=80';
-  }
-  if (text.includes('monitor') || text.includes('pantalla')) {
-    return 'https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?auto=format&fit=crop&w=600&q=80';
-  }
-  if (text.includes('audio') || text.includes('auricular') || text.includes('sony') || text.includes('sonido')) {
-    return 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?auto=format&fit=crop&w=600&q=80';
-  }
-  if (text.includes('tablet') || text.includes('samsung')) {
-    return 'https://images.unsplash.com/photo-1544244015-0df4b3ffc6b0?auto=format&fit=crop&w=600&q=80';
-  }
-  if (text.includes('webcam') || text.includes('camara') || text.includes('c920')) {
-    return 'https://images.unsplash.com/photo-1588702547919-26089e690ecc?auto=format&fit=crop&w=600&q=80';
-  }
-  if (text.includes('hub') || text.includes('anker') || text.includes('usb')) {
-    return 'https://images.unsplash.com/photo-1622445262464-84b14e3295b3?auto=format&fit=crop&w=600&q=80';
-  }
-  return 'https://images.unsplash.com/photo-1526738549149-8e07eca6c147?auto=format&fit=crop&w=600&q=80';
-}
+// Facetas reactivas devueltas por el backend
+const facets = ref<FacetasCatalogo>({
+  categorias: [],
+  marcas: [],
+  precio: { min: 0, max: 0 },
+  en_stock: 0,
+  total_general: 0
+});
+
+// Control responsive del panel lateral de filtros en móviles
+const isMobileFiltersOpen = ref(false);
 
 const products = ref<MarketplaceProduct[]>([]);
+const totalCoincidencias = ref(0);
 
-// Cargar categorías y productos directamente desde la base de datos Supabase
-async function syncWithSupabase() {
-  isSyncingCatalog.value = true;
+// Productos Recomendados (RF-19 / US-19 Cross-selling)
+const recommendedProducts = ref<MarketplaceProduct[]>([]);
+const isLoadingRecommendations = ref(false);
+
+// Base de catálogo local de respaldo
+const fallbackProducts: MarketplaceProduct[] = [
+  {
+    id: '20000000-0000-0000-0000-000000000001',
+    sku: 'LAP-DELL-XPS15',
+    nombre: 'Laptop Dell XPS 15 (OLED 4K, i7 13va Gen)',
+    categoria: 'Laptops y PCs',
+    categoria_id: '10000000-0000-0000-0000-000000000001',
+    marca: 'Dell',
+    precio: 8999.00,
+    rating: 4.9,
+    stock: 8,
+    badge: 'Más Vendido',
+    image: 'https://images.unsplash.com/photo-1593642632823-8f785ba67e45?auto=format&fit=crop&w=600&q=80',
+    galleryImages: []
+  },
+  {
+    id: '20000000-0000-0000-0000-000000000002',
+    sku: 'LAP-APP-MBP16',
+    nombre: 'Apple MacBook Pro 16" Chip M3 Pro',
+    categoria: 'Laptops y PCs',
+    categoria_id: '10000000-0000-0000-0000-000000000001',
+    marca: 'Apple',
+    precio: 18500.00,
+    rating: 5.0,
+    stock: 4,
+    badge: 'Pro Performance',
+    image: 'https://images.unsplash.com/photo-1517336714731-489689fd1ca8?auto=format&fit=crop&w=600&q=80',
+    galleryImages: []
+  },
+  {
+    id: '20000000-0000-0000-0000-000000000003',
+    sku: 'MOU-LOG-MX3S',
+    nombre: 'Mouse Inalámbrico Logitech MX Master 3S',
+    categoria: 'Periféricos',
+    categoria_id: '10000000-0000-0000-0000-000000000002',
+    marca: 'Logitech',
+    precio: 799.00,
+    rating: 4.8,
+    stock: 24,
+    badge: 'Ergonomía Top',
+    image: 'https://images.unsplash.com/photo-1615663245857-ac93bb7c39e7?auto=format&fit=crop&w=600&q=80',
+    galleryImages: []
+  },
+  {
+    id: '20000000-0000-0000-0000-000000000004',
+    sku: 'TEC-LOG-MXMECH',
+    nombre: 'Teclado Mecánico Inalámbrico Logitech MX Mechanical',
+    categoria: 'Periféricos',
+    categoria_id: '10000000-0000-0000-0000-000000000002',
+    marca: 'Logitech',
+    precio: 1150.00,
+    rating: 4.8,
+    stock: 15,
+    badge: 'Productividad',
+    image: 'https://images.unsplash.com/photo-1587829741301-dc798b83add3?auto=format&fit=crop&w=600&q=80',
+    galleryImages: []
+  },
+  {
+    id: '20000000-0000-0000-0000-000000000005',
+    sku: 'MON-LG-27GP',
+    nombre: 'Monitor Gamer LG UltraGear 27" 165Hz IPS',
+    categoria: 'Monitores',
+    categoria_id: '10000000-0000-0000-0000-000000000003',
+    marca: 'LG',
+    precio: 2450.00,
+    rating: 4.7,
+    stock: 5,
+    badge: 'Gamer 165Hz',
+    image: 'https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?auto=format&fit=crop&w=600&q=80',
+    galleryImages: []
+  },
+  {
+    id: '20000000-0000-0000-0000-000000000006',
+    sku: 'MON-SAM-M8',
+    nombre: 'Monitor Inteligente Samsung Smart M8 32" 4K',
+    categoria: 'Monitores',
+    categoria_id: '10000000-0000-0000-0000-000000000003',
+    marca: 'Samsung',
+    precio: 4200.00,
+    rating: 4.6,
+    stock: 7,
+    badge: 'Smart 4K',
+    image: 'https://images.unsplash.com/photo-1547119957-637f8679db1e?auto=format&fit=crop&w=600&q=80',
+    galleryImages: []
+  },
+  {
+    id: '20000000-0000-0000-0000-000000000007',
+    sku: 'AUR-SONY-WH1000',
+    nombre: 'Auriculares Sony WH-1000XM5 Noise Cancelling',
+    categoria: 'Audio y Video',
+    categoria_id: '10000000-0000-0000-0000-000000000004',
+    marca: 'Sony',
+    precio: 2890.00,
+    rating: 4.9,
+    stock: 12,
+    badge: 'Hi-Res Audio',
+    image: 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?auto=format&fit=crop&w=600&q=80',
+    galleryImages: []
+  },
+  {
+    id: '20000000-0000-0000-0000-000000000008',
+    sku: 'CAM-SONY-A7IV',
+    nombre: 'Cámara Digital Sony Alpha 7 IV Full-Frame Mirrorless',
+    categoria: 'Cámaras y Fotografía',
+    categoria_id: '10000000-0000-0000-0000-000000000005',
+    marca: 'Sony',
+    precio: 16999.00,
+    rating: 5.0,
+    stock: 3,
+    badge: 'Full Frame 4K',
+    image: 'https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=600&q=80',
+    galleryImages: []
+  }
+];
+
+function mapDbProductToMarketplace(dbp: any): MarketplaceProduct {
+  const gallery = (dbp.imagenes_producto || []).sort((a: any, b: any) => a.orden - b.orden);
+  const cover = gallery.find((i: any) => i.es_principal) || gallery[0];
+  const realPrice = Number(dbp.precio || 0);
+
+  const rawVariants = Array.isArray(dbp.variantes) ? dbp.variantes : [];
+  const firstVariant = rawVariants.length > 0 ? rawVariants[0] : null;
+  const atributos = firstVariant?.atributos || dbp.atributos || {};
+
+  return {
+    id: dbp.id,
+    sku: dbp.sku,
+    nombre: dbp.nombre,
+    descripcion: dbp.descripcion || '',
+    categoria: dbp.categorias?.nombre || 'General',
+    categoria_id: dbp.categoria_id,
+    marca: dbp.marca || 'MaxiConecta',
+    precio: realPrice > 0 ? realPrice : 999.00,
+    rating: 4.8,
+    stock: dbp.stock == null ? -1 : Number(dbp.stock),
+    badge: realPrice > 8000 ? 'Pro' : (dbp.stock == null ? 'Consultar stock' : (dbp.stock < 5 ? 'Pocas unidades' : 'Disponible')),
+    image: cover?.url || (dbp.imagenes && dbp.imagenes[0]) || 'https://images.unsplash.com/photo-1526738549149-8e07eca6c147?auto=format&fit=crop&w=600&q=80',
+    galleryImages: gallery,
+    atributos: atributos,
+    variantes: rawVariants.map((v: any) => ({
+      id: v.id,
+      sku: v.sku,
+      nombre_variante: v.nombre_variante,
+      atributos: v.atributos || {},
+      precio: Number(v.precio || realPrice)
+    }))
+  };
+}
+
+// -----------------------------------------------------------------------------
+// SINCRONIZACIÓN DE FILTROS CON LA URL (DEEP LINKING & HISTORIAL)
+// -----------------------------------------------------------------------------
+let isReadingUrl = false;
+
+function leerFiltrosDeUrl() {
+  isReadingUrl = true;
+  const q = route.query;
+
+  if (q.q && typeof q.q === 'string') {
+    searchQuery.value = q.q;
+    debouncedQuery.value = q.q;
+  } else {
+    searchQuery.value = '';
+    debouncedQuery.value = '';
+  }
+
+  if (q.categoria_ids && typeof q.categoria_ids === 'string') {
+    selectedCategoryIds.value = q.categoria_ids.split(',').filter(Boolean);
+  } else {
+    selectedCategoryIds.value = [];
+  }
+
+  if (q.marcas && typeof q.marcas === 'string') {
+    selectedBrands.value = q.marcas.split(',').filter(Boolean);
+  } else {
+    selectedBrands.value = [];
+  }
+
+  if (q.precio_min) {
+    const pMin = Number(q.precio_min);
+    if (!isNaN(pMin) && pMin > 0) {
+      priceMinInput.value = pMin;
+      appliedPriceMin.value = pMin;
+    }
+  } else {
+    priceMinInput.value = null;
+    appliedPriceMin.value = null;
+  }
+
+  if (q.precio_max) {
+    const pMax = Number(q.precio_max);
+    if (!isNaN(pMax) && pMax > 0) {
+      priceMaxInput.value = pMax;
+      appliedPriceMax.value = pMax;
+    }
+  } else {
+    priceMaxInput.value = null;
+    appliedPriceMax.value = null;
+  }
+
+  onlyInStock.value = q.en_stock === 'true';
+
+  if (q.ordenar_por && typeof q.ordenar_por === 'string') {
+    if (['relevancia', 'precio_asc', 'precio_desc', 'nombre'].includes(q.ordenar_por)) {
+      sortBy.value = q.ordenar_por as any;
+    }
+  } else {
+    sortBy.value = 'relevancia';
+  }
+
+  isReadingUrl = false;
+}
+
+function sincronizarUrlConFiltros() {
+  if (isReadingUrl) return;
+
+  const queryParams: Record<string, string> = {};
+  if (debouncedQuery.value.trim()) queryParams.q = debouncedQuery.value.trim();
+  if (selectedCategoryIds.value.length > 0) queryParams.categoria_ids = selectedCategoryIds.value.join(',');
+  if (selectedBrands.value.length > 0) queryParams.marcas = selectedBrands.value.join(',');
+  if (appliedPriceMin.value !== null && appliedPriceMin.value > 0) queryParams.precio_min = String(appliedPriceMin.value);
+  if (appliedPriceMax.value !== null && appliedPriceMax.value > 0) queryParams.precio_max = String(appliedPriceMax.value);
+  if (onlyInStock.value) queryParams.en_stock = 'true';
+  if (sortBy.value !== 'relevancia') queryParams.ordenar_por = sortBy.value;
+
+  router.replace({ query: queryParams });
+}
+
+// -----------------------------------------------------------------------------
+// DEBOUNCE PARA BÚSQUEDA Y SUGERENCIAS
+// -----------------------------------------------------------------------------
+let debounceTimeout: any = null;
+let suggestionsTimeout: any = null;
+
+watch(searchQuery, (newVal) => {
+  clearTimeout(debounceTimeout);
+  clearTimeout(suggestionsTimeout);
+
+  if (newVal.trim().length >= 1) {
+    suggestionsTimeout = setTimeout(() => {
+      fetchSuggestions(newVal.trim());
+    }, 150);
+  } else {
+    suggestions.value = [];
+    showSuggestions.value = false;
+  }
+
+  debounceTimeout = setTimeout(() => {
+    debouncedQuery.value = newVal.trim();
+    sincronizarUrlConFiltros();
+    ejecutarBusqueda();
+  }, 300);
+});
+
+// Observar navegación con botones Atrás/Adelante del navegador
+watch(
+  () => route.query,
+  () => {
+    leerFiltrosDeUrl();
+    ejecutarBusqueda();
+  }
+);
+
+watch(
+  () => [authStore.user?.tipo_cliente, authStore.user?.sucursal_id],
+  () => ejecutarBusqueda()
+);
+
+onMounted(() => {
+  leerFiltrosDeUrl();
+  ejecutarBusqueda();
+  fetchRecommendations();
+});
+
+// -----------------------------------------------------------------------------
+// LLAMADAS AL ENDPOINT DE BÚSQUEDA, SUGERENCIAS Y RECOMENDACIONES (RF-19)
+// -----------------------------------------------------------------------------
+async function fetchSuggestions(term: string) {
   try {
-    // 1. Cargar categorías de la base de datos
-    try {
-      const catRes = await apiClient.get('/v1/catalogo/categorias');
-      const dbCats = Array.isArray(catRes.data) ? catRes.data : [];
-      if (dbCats.length > 0) {
-        const nombresUnicos = Array.from(new Set(dbCats.map((c: any) => c.nombre).filter(Boolean)));
-        categories.value = ['Todos', ...nombresUnicos];
-      }
-    } catch (catErr) {
-      console.warn('Aviso cargando categorías de la BD:', catErr);
-    }
-
-    // 2. Cargar productos y variantes con precios reales de la BD
-    const res = await apiClient.get('/v1/catalogo/productos');
-    const dbProducts: Producto[] = Array.isArray(res.data) ? res.data : (res.data as any)?.productos || [];
-
-    if (dbProducts.length > 0) {
-      // Filtrar productos publicados o con catálogo activo
-      const productosValidos = dbProducts.filter(p => p.estado !== 'borrador');
-      const listado = productosValidos.length > 0 ? productosValidos : dbProducts;
-
-      products.value = listado.map((dbp, idx) => {
-        const gallery = (dbp.imagenes_producto || []).sort((a, b) => a.orden - b.orden);
-        const cover = gallery.find(i => i.es_principal) || gallery[0];
-        
-        // Extraer precio real de la variante o campo calculado
-        const realPrice = dbp.precio !== undefined && dbp.precio !== null && Number(dbp.precio) > 0
-          ? Number(dbp.precio)
-          : (dbp.variantes?.[0]?.precio ? Number(dbp.variantes[0].precio) : 999.00);
-
-        const imgUrl = cover?.url || getDefaultImageForCategory(dbp.categorias?.nombre, dbp.nombre);
-        const stockUnits = dbp.estado === 'descontinuado' ? 0 : (8 + ((idx * 3) % 15));
-
-        return {
-          id: dbp.id,
-          sku: dbp.sku,
-          nombre: dbp.nombre,
-          categoria: dbp.categorias?.nombre || 'Laptops y PCs',
-          precio: realPrice,
-          rating: Number((4.6 + ((idx % 4) * 0.1)).toFixed(1)),
-          stock: stockUnits,
-          badge: dbp.estado === 'descontinuado' 
-            ? 'Últimas unidades' 
-            : (idx === 0 ? 'Más Vendido' : (idx === 1 ? 'Popular' : (idx === 2 ? 'Envío Gratis' : 'En Stock'))),
-          image: imgUrl,
-          variante_id: dbp.variante_id || dbp.variantes?.[0]?.id,
-          galleryImages: gallery
-        };
-      });
-    }
-
-    catalogUpdatedAt.value = new Date().toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' });
+    const res = await apiClient.get('/api/v1/catalogo/sugerencias', {
+      params: { q: term, limite: 5 }
+    });
+    suggestions.value = Array.isArray(res.data) ? res.data : [];
+    showSuggestions.value = suggestions.value.length > 0;
   } catch (err) {
-    console.warn('Aviso sincronizando productos de Supabase:', err);
-  } finally {
-    isSyncingCatalog.value = false;
+    const norm = term.toLowerCase();
+    suggestions.value = fallbackProducts
+      .filter(p => p.nombre.toLowerCase().includes(norm) || p.sku.toLowerCase().includes(norm) || p.categoria.toLowerCase().includes(norm))
+      .slice(0, 5)
+      .map(p => ({
+        id: p.id,
+        nombre: p.nombre,
+        sku: p.sku,
+        categoria: p.categoria,
+        marca: p.marca || null,
+        precio: p.precio,
+        imagen_url: p.image,
+        stock: p.stock
+      }));
+    showSuggestions.value = suggestions.value.length > 0;
   }
 }
 
-onMounted(() => {
-  syncWithSupabase();
-});
-
-// Modal de Galería de Producto
-const activeGalleryProduct = ref<MarketplaceProduct | null>(null);
-const currentGalleryIndex = ref(0);
-
-function openProductGallery(prod: MarketplaceProduct) {
-  activeGalleryProduct.value = prod;
-  currentGalleryIndex.value = 0;
+async function fetchRecommendations(targetProdId?: string, catId?: string) {
+  isLoadingRecommendations.value = true;
+  try {
+    const params: Record<string, any> = { limite: 4 };
+    if (targetProdId) params.id = targetProdId;
+    if (catId) params.categoria_id = catId;
+    const res = await apiClient.get('/api/v1/catalogo/recomendaciones', { params });
+    if (res.data && Array.isArray(res.data) && res.data.length > 0) {
+      recommendedProducts.value = await applyResolvedPrices(res.data.map(mapDbProductToMarketplace));
+    } else {
+      recommendedProducts.value = await applyResolvedPrices(fallbackProducts.slice(0, 4));
+    }
+  } catch {
+    recommendedProducts.value = await applyResolvedPrices(fallbackProducts.slice(0, 4));
+  } finally {
+    isLoadingRecommendations.value = false;
+  }
 }
 
-const currentGalleryImage = computed<string | undefined>(() => {
-  if (!activeGalleryProduct.value) return undefined;
-  const imgs = activeGalleryProduct.value.galleryImages;
-  if (imgs.length === 0) return activeGalleryProduct.value.image;
-  return imgs[currentGalleryIndex.value]?.url || activeGalleryProduct.value.image;
-});
+async function applyResolvedPrices(productsToPrice: MarketplaceProduct[]): Promise<MarketplaceProduct[]> {
+  const tipoCliente = authStore.user?.tipo_cliente === 'corporativo_b2b'
+    ? 'corporativo_b2b'
+    : 'retail';
+  const sucursalId = authStore.user?.sucursal_id || undefined;
+  if (productsToPrice.length === 0) return productsToPrice;
 
-const filteredProducts = computed(() => {
-  return products.value.filter(p => {
-    const matchesSearch = p.nombre.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-                          p.sku.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-                          p.categoria.toLowerCase().includes(searchQuery.value.toLowerCase());
-    const matchesCategory = selectedCategory.value === 'Todos' || p.categoria === selectedCategory.value;
-    return matchesSearch && matchesCategory;
+  try {
+    const resolutions = await resolverPreciosLote({
+      variante_ids: productsToPrice.map(product => product.id),
+      canal: 'web',
+      tipo_cliente: tipoCliente,
+      sucursal_id: sucursalId
+    });
+    for (const product of productsToPrice) {
+      const resolution = resolutions[product.id];
+      if (resolution) {
+        product.precio = Number(resolution.precio) * (resolution.moneda === 'USD' ? 6.96 : 1);
+      }
+    }
+  } catch {
+    // Mantener el precio base del catálogo si el resolutor no está disponible.
+  }
+  return productsToPrice;
+}
+
+function selectSuggestion(item: SugerenciaItem) {
+  searchQuery.value = item.nombre;
+  debouncedQuery.value = item.nombre;
+  showSuggestions.value = false;
+  sincronizarUrlConFiltros();
+  ejecutarBusqueda();
+}
+
+function clearSearch() {
+  searchQuery.value = '';
+  debouncedQuery.value = '';
+  showSuggestions.value = false;
+  sincronizarUrlConFiltros();
+  ejecutarBusqueda();
+}
+
+async function ejecutarBusqueda() {
+  isSearching.value = true;
+  try {
+    const params: Record<string, any> = {
+      ordenar_por: sortBy.value,
+      pagina: 1,
+      limite: 40
+    };
+
+    if (debouncedQuery.value) {
+      params.q = debouncedQuery.value;
+    }
+    if (selectedCategoryIds.value.length > 0) {
+      params.categoria_ids = selectedCategoryIds.value.join(',');
+    }
+    if (selectedBrands.value.length > 0) {
+      params.marcas = selectedBrands.value.join(',');
+    }
+    if (appliedPriceMin.value !== null && appliedPriceMin.value > 0) {
+      params.precio_min = appliedPriceMin.value;
+    }
+    if (appliedPriceMax.value !== null && appliedPriceMax.value > 0) {
+      params.precio_max = appliedPriceMax.value;
+    }
+    if (onlyInStock.value) {
+      params.en_stock = true;
+    }
+
+    const res = await apiClient.get('/api/v1/catalogo/buscar', { params });
+    const data = res.data;
+
+    if (data && Array.isArray(data.items)) {
+      totalCoincidencias.value = data.total_coincidencias ?? data.items.length;
+      facets.value = data.facetas || {
+        categorias: [],
+        marcas: [],
+        precio: { min: 0, max: 0 },
+        en_stock: 0,
+        total_general: data.items.length
+      };
+
+      products.value = await applyResolvedPrices(data.items.map(mapDbProductToMarketplace));
+      catalogUpdatedAt.value = new Date().toLocaleTimeString('es-BO', { hour: '2-digit', minute: '2-digit' });
+    }
+  } catch (err) {
+    console.warn('Aviso: backend no disponible, ejecutando motor facetado en memoria local:', err);
+    await aplicarFiltrosLocales();
+  } finally {
+    isSearching.value = false;
+  }
+}
+
+async function aplicarFiltrosLocales() {
+  const normQ = debouncedQuery.value.toLowerCase();
+  let filtered = [...fallbackProducts];
+
+  if (normQ) {
+    filtered = filtered.filter(p => 
+      p.nombre.toLowerCase().includes(normQ) ||
+      p.sku.toLowerCase().includes(normQ) ||
+      p.categoria.toLowerCase().includes(normQ) ||
+      (p.marca && p.marca.toLowerCase().includes(normQ))
+    );
+  }
+
+  const catMap: Record<string, { id: string; etiqueta: string; total: number }> = {};
+  const brandMap: Record<string, number> = {};
+  let minP = Infinity;
+  let maxP = 0;
+  let inStockCount = 0;
+
+  filtered.forEach(p => {
+    if (p.precio < minP) minP = p.precio;
+    if (p.precio > maxP) maxP = p.precio;
+    if (p.stock > 0) inStockCount++;
+
+    if (p.categoria_id) {
+      if (!catMap[p.categoria_id]) {
+        catMap[p.categoria_id] = { id: p.categoria_id, etiqueta: p.categoria, total: 0 };
+      }
+      catMap[p.categoria_id].total++;
+    }
+
+    if (p.marca) {
+      brandMap[p.marca] = (brandMap[p.marca] || 0) + 1;
+    }
   });
+
+  facets.value = {
+    categorias: Object.values(catMap).map(c => ({
+      ...c,
+      seleccionado: selectedCategoryIds.value.includes(c.id)
+    })),
+    marcas: Object.entries(brandMap).map(([brand, count]) => ({
+      id: brand,
+      etiqueta: brand,
+      total: count,
+      seleccionado: selectedBrands.value.includes(brand)
+    })),
+    precio: { min: minP === Infinity ? 0 : minP, max: maxP },
+    en_stock: inStockCount,
+    total_general: fallbackProducts.length
+  };
+
+  if (selectedCategoryIds.value.length > 0) {
+    filtered = filtered.filter(p => p.categoria_id && selectedCategoryIds.value.includes(p.categoria_id));
+  }
+  if (selectedBrands.value.length > 0) {
+    filtered = filtered.filter(p => p.marca && selectedBrands.value.includes(p.marca));
+  }
+  if (appliedPriceMin.value !== null) {
+    filtered = filtered.filter(p => p.precio >= appliedPriceMin.value!);
+  }
+  if (appliedPriceMax.value !== null) {
+    filtered = filtered.filter(p => p.precio <= appliedPriceMax.value!);
+  }
+  if (onlyInStock.value) {
+    filtered = filtered.filter(p => p.stock > 0);
+  }
+
+  if (sortBy.value === 'precio_asc') {
+    filtered.sort((a, b) => a.precio - b.precio);
+  } else if (sortBy.value === 'precio_desc') {
+    filtered.sort((a, b) => b.precio - a.precio);
+  } else if (sortBy.value === 'nombre') {
+    filtered.sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }
+
+  products.value = await applyResolvedPrices(filtered);
+  totalCoincidencias.value = filtered.length;
+}
+
+// -----------------------------------------------------------------------------
+// CONTROLADORES DE FILTROS FACETADOS
+// -----------------------------------------------------------------------------
+function toggleCategoria(catId: string) {
+  const index = selectedCategoryIds.value.indexOf(catId);
+  if (index > -1) {
+    selectedCategoryIds.value.splice(index, 1);
+  } else {
+    selectedCategoryIds.value.push(catId);
+  }
+  sincronizarUrlConFiltros();
+  ejecutarBusqueda();
+}
+
+function toggleMarca(brandName: string) {
+  const index = selectedBrands.value.indexOf(brandName);
+  if (index > -1) {
+    selectedBrands.value.splice(index, 1);
+  } else {
+    selectedBrands.value.push(brandName);
+  }
+  sincronizarUrlConFiltros();
+  ejecutarBusqueda();
+}
+
+function aplicarRangoPrecio(min: number | null, max: number | null) {
+  priceMinInput.value = min;
+  priceMaxInput.value = max;
+  appliedPriceMin.value = min;
+  appliedPriceMax.value = max;
+  sincronizarUrlConFiltros();
+  ejecutarBusqueda();
+}
+
+function toggleStock() {
+  onlyInStock.value = !onlyInStock.value;
+  sincronizarUrlConFiltros();
+  ejecutarBusqueda();
+}
+
+function limpiarTodosLosFiltros() {
+  searchQuery.value = '';
+  debouncedQuery.value = '';
+  selectedCategoryIds.value = [];
+  selectedBrands.value = [];
+  priceMinInput.value = null;
+  priceMaxInput.value = null;
+  appliedPriceMin.value = null;
+  appliedPriceMax.value = null;
+  onlyInStock.value = false;
+  sortBy.value = 'relevancia';
+  sincronizarUrlConFiltros();
+  ejecutarBusqueda();
+}
+
+function onSortChange() {
+  sincronizarUrlConFiltros();
+  ejecutarBusqueda();
+}
+
+const activeFiltersCount = computed(() => {
+  let count = 0;
+  if (debouncedQuery.value) count++;
+  count += selectedCategoryIds.value.length;
+  count += selectedBrands.value.length;
+  if (appliedPriceMin.value !== null || appliedPriceMax.value !== null) count++;
+  if (onlyInStock.value) count++;
+  return count;
 });
 
 const inventorySummary = computed(() => {
-  const units = filteredProducts.value.reduce((total, product) => total + product.stock, 0);
-  return { products: filteredProducts.value.length, units };
+  const units = products.value.reduce((total, product) => total + (product.stock || 0), 0);
+  return { products: totalCoincidencias.value, units };
 });
 
-function showOffers() {
-  selectedCategory.value = 'Todos';
-  searchQuery.value = '';
-}
-
 function refreshCatalog() {
-  syncWithSupabase();
-}
-
-function agregarAlCarrito(prod: any) {
-  cartStore.addItem({
-    variante_id: prod.variante_id || prod.variantes?.[0]?.id || prod.id,
-    sku: prod.sku,
-    nombre: prod.nombre,
-    cantidad: 1,
-    precio_unitario: prod.precio
+  isSyncingCatalog.value = true;
+  ejecutarBusqueda().finally(() => {
+    isSyncingCatalog.value = false;
   });
 }
 
-function alternarDeseo(prod: MarketplaceProduct) {
-  const yaEsta = wishlistStore.estaEnDeseos(prod.id);
+// -----------------------------------------------------------------------------
+// MODAL DE GALERÍA Y ACCIONES DE CARRITO / DESEOS
+// -----------------------------------------------------------------------------
+const activeGalleryProduct = ref<MarketplaceProduct | null>(null);
 
-  if (yaEsta) {
-    wishlistStore.eliminarDeseo('demo-client', prod.id);
-  } else {
-    wishlistStore.agregarDeseo('demo-client', prod.id);
+function openProductGallery(prod: MarketplaceProduct) {
+  activeGalleryProduct.value = prod;
+}
+
+async function agregarAlCarrito(prod: MarketplaceProduct) {
+  try {
+    const stock = await consultarStock(prod.sku);
+    products.value.filter(p => p.sku === prod.sku).forEach(p => { p.stock = stock.stock_disponible; });
+    cartStore.addItem({
+      variante_id: prod.id,
+      sku: prod.sku,
+      nombre: prod.nombre,
+      cantidad: 1,
+      precio_unitario: prod.precio,
+      stock_disponible: stock.stock_disponible
+    });
+  } catch {
+    cartStore.error = `No se pudo verificar el stock de ${prod.nombre}. Inténtalo nuevamente.`;
+    cartStore.openDrawer();
   }
 }
 
+function alternarDeseo(prod: MarketplaceProduct) {
+  wishlistStore.alternarDeseo({
+    id: prod.id,
+    sku: prod.sku,
+    nombre: prod.nombre,
+    precio: prod.precio,
+    image: prod.image,
+    variante_id: prod.id
+  }, authStore.user?.id);
+}
 </script>
 
 <template>
   <div class="space-y-8">
     <!-- Hero Banner Promocional -->
-    <section class="relative overflow-hidden rounded-2xl bg-gradient-to-br from-teal-50 via-cyan-50 to-amber-100 p-7 sm:p-10 md:p-14 text-slate-950 shadow-xl shadow-teal-950/10 border border-white surface-grid">
+    <section class="relative overflow-hidden rounded-2xl bg-gradient-to-br from-teal-50 via-cyan-50 to-amber-100 p-7 sm:p-10 md:p-12 text-slate-950 shadow-xl shadow-teal-950/10 border border-white surface-grid">
       <div class="absolute inset-0 bg-[radial-gradient(circle_at_88%_20%,rgba(251,191,36,0.42),transparent_24%),radial-gradient(circle_at_20%_100%,rgba(45,212,191,0.28),transparent_32%)]" />
       <div class="relative z-10 grid grid-cols-1 lg:grid-cols-[1.4fr_0.6fr] gap-8 items-end">
-        <div class="max-w-2xl space-y-5">
+        <div class="max-w-2xl space-y-4">
           <span class="inline-flex items-center gap-1.5 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold tracking-wide text-teal-900 backdrop-blur-md border border-teal-200 shadow-sm">
-            <Sparkles class="w-3.5 h-3.5 text-amber-600" /> Selección tecnológica curada
+            <Sparkles class="w-3.5 h-3.5 text-amber-600" /> Catálogo de Productos
           </span>
-          <p class="text-xs font-bold uppercase tracking-[0.18em] text-teal-700">MaxiConecta marketplace</p>
-          <h1 class="display-font text-4xl sm:text-5xl md:text-6xl font-bold leading-[1.03]">
-            Tecnología lista para tu próximo movimiento.
+          <h1 class="display-font text-3xl sm:text-4xl md:text-5xl font-black leading-tight tracking-tight text-slate-900">
+            Encuentra exactamente lo que buscas.
           </h1>
           <p class="max-w-xl text-slate-700 text-sm sm:text-base leading-relaxed">
-            Compara equipos, encuentra disponibilidad inmediata y compra con la misma experiencia que conecta nuestras sucursales.
+            Explora una amplia selección de productos con disponibilidad en tiempo real y los mejores precios.
           </p>
-          <div class="flex flex-wrap gap-3 pt-1">
-            <button @click="showOffers" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-300 hover:bg-amber-200 text-slate-950 text-sm font-bold shadow-lg shadow-amber-950/20">
-              Ver catálogo <ChevronRight class="w-4 h-4" />
-            </button>
-            <button @click="selectedCategory = 'Laptops y PCs'" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white/80 hover:bg-white border border-teal-200 text-teal-900 text-sm font-semibold shadow-sm backdrop-blur-sm">
-              Explorar laptops
-            </button>
-          </div>
         </div>
         <div class="grid grid-cols-2 gap-3 max-w-sm lg:justify-self-end">
-          <div class="rounded-xl bg-white/80 p-4 border border-white shadow-sm backdrop-blur-sm">
-            <span class="block text-3xl font-black text-amber-500">{{ inventorySummary.products }}</span>
-            <span class="block mt-1 text-[11px] uppercase tracking-wider text-slate-600">productos visibles</span>
+          <div class="rounded-xl bg-white/80 p-3.5 border border-white shadow-sm backdrop-blur-sm">
+            <span class="block text-2xl font-black text-amber-600">{{ totalCoincidencias }}</span>
+            <span class="block mt-0.5 text-[11px] uppercase tracking-wider text-slate-600 font-semibold">coincidencias</span>
           </div>
-          <div class="rounded-xl bg-white/80 p-4 border border-white shadow-sm backdrop-blur-sm">
-            <span class="block text-3xl font-black text-teal-800">{{ inventorySummary.units }}</span>
-            <span class="block mt-1 text-[11px] uppercase tracking-wider text-slate-600">unidades en stock</span>
+          <div class="rounded-xl bg-white/80 p-3.5 border border-white shadow-sm backdrop-blur-sm">
+            <span class="block text-2xl font-black text-teal-800">{{ inventorySummary.units }}</span>
+            <span class="block mt-0.5 text-[11px] uppercase tracking-wider text-slate-600 font-semibold">unidades stock</span>
           </div>
-          <div class="col-span-2 rounded-xl bg-slate-900/85 p-4 border border-slate-900 flex items-center gap-3 shadow-lg shadow-slate-900/10">
-            <ShieldCheck class="w-9 h-9 text-teal-300 shrink-0" />
-            <p class="text-xs leading-relaxed text-slate-100">Precios sincronizados con catálogo y disponibilidad por sucursal.</p>
+          <div class="col-span-2 rounded-xl bg-slate-900/90 p-3.5 border border-slate-800 flex items-center gap-3 shadow-md">
+            <ShieldCheck class="w-8 h-8 text-teal-300 shrink-0" />
+            <p class="text-xs leading-snug text-slate-200">Búsqueda inteligente y filtros instantáneos para encontrar lo que necesitas.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="flex flex-col md:flex-row gap-4 justify-between items-center bg-white/90 dark:bg-slate-900/90 p-4 rounded-xl border border-white shadow-lg shadow-slate-300/30 dark:border-slate-800 dark:shadow-none backdrop-blur-sm">
-      <div class="flex items-center gap-3 w-full md:w-auto">
-        <span class="w-10 h-10 shrink-0 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center">
-          <Filter class="w-4 h-4" />
-        </span>
-        <div>
-          <h2 class="text-sm font-bold text-slate-900 dark:text-white">Encuentra tu próximo equipo</h2>
-          <p class="text-[11px] text-slate-500 flex items-center gap-1.5">
-            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 soft-pulse"></span>
-            {{ inventorySummary.products }} resultados · Catálogo sincronizado {{ catalogUpdatedAt }}
+    <!-- Barra de Búsqueda Predictiva con Autocompletado (Subcomponente) -->
+    <MarketplaceSearchBar
+      v-model:search-query="searchQuery"
+      v-model:sort-by="sortBy"
+      v-model:show-suggestions="showSuggestions"
+      :suggestions="suggestions"
+      :is-searching="isSearching"
+      :is-syncing-catalog="isSyncingCatalog"
+      :active-filters-count="activeFiltersCount"
+      :facets="facets"
+      :selected-category-ids="selectedCategoryIds"
+      :selected-brands="selectedBrands"
+      :applied-price-min="appliedPriceMin"
+      :applied-price-max="appliedPriceMax"
+      :only-in-stock="onlyInStock"
+      :debounced-query="debouncedQuery"
+      @select-suggestion="selectSuggestion"
+      @clear-search="clearSearch"
+      @toggle-mobile-filters="isMobileFiltersOpen = !isMobileFiltersOpen"
+      @refresh-catalog="refreshCatalog"
+      @toggle-category="toggleCategoria"
+      @toggle-brand="toggleMarca"
+      @clear-price-range="aplicarRangoPrecio(null, null)"
+      @toggle-stock="toggleStock"
+      @clear-all-filters="limpiarTodosLosFiltros"
+      @sort-change="onSortChange"
+    />
+
+    <!-- Layout Principal: Barra Lateral de Filtros Facetados + Cuadrícula de Productos -->
+    <div class="grid grid-cols-1 lg:grid-cols-[270px_1fr] gap-8 items-start">
+      
+      <!-- Barra Lateral de Filtros Facetados (Subcomponente) -->
+      <MarketplaceFacetSidebar
+        :facets="facets"
+        :selected-category-ids="selectedCategoryIds"
+        :selected-brands="selectedBrands"
+        :price-min="appliedPriceMin"
+        :price-max="appliedPriceMax"
+        :only-in-stock="onlyInStock"
+        :active-filters-count="activeFiltersCount"
+        :is-mobile-open="isMobileFiltersOpen"
+        @toggle-category="toggleCategoria"
+        @toggle-brand="toggleMarca"
+        @apply-price-range="aplicarRangoPrecio"
+        @toggle-stock="toggleStock"
+        @reset-filters="limpiarTodosLosFiltros"
+        @close-mobile="isMobileFiltersOpen = false"
+      />
+
+      <!-- Cuadrícula de Productos o Estado Vacío -->
+      <main class="space-y-6">
+        
+        <!-- Indicador de Resultados y Estado -->
+        <div class="flex items-center justify-between text-xs text-slate-500 px-1">
+          <p class="flex items-center gap-1.5 font-medium">
+            <span class="w-2 h-2 rounded-full bg-teal-500"></span>
+            Mostrando <strong class="text-slate-900 dark:text-white">{{ products.length }}</strong> de {{ totalCoincidencias }} productos encontrados
           </p>
-        </div>
-      </div>
-      <div class="flex items-center gap-2 w-full md:w-auto">
-        <div class="relative w-full md:w-80">
-        <Search class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-        <input
-          v-model="searchQuery"
-          type="text"
-          placeholder="Buscar por nombre, marca o SKU..."
-          class="w-full pl-10 pr-4 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
-        />
-        </div>
-        <button
-          type="button"
-          class="shrink-0 w-10 h-10 rounded-lg border border-slate-200 bg-slate-50 hover:bg-teal-50 hover:border-teal-200 text-slate-500 hover:text-teal-700 flex items-center justify-center"
-          :title="isSyncingCatalog ? 'Actualizando catálogo' : 'Actualizar catálogo'"
-          :disabled="isSyncingCatalog"
-          @click="refreshCatalog"
-        >
-          <RefreshCw :class="['w-4 h-4', isSyncingCatalog ? 'animate-spin' : '']" />
-        </button>
-      </div>
-
-      <!-- Píldoras de Categorías -->
-      <div class="flex items-center gap-2 overflow-x-auto w-full md:w-auto pb-2 md:pb-0">
-        <button
-          v-for="cat in categories"
-          :key="cat"
-          @click="selectedCategory = cat"
-          :class="[
-            'px-3.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors',
-            selectedCategory === cat
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-          ]"
-        >
-          {{ cat }}
-        </button>
-      </div>
-    </section>
-
-    <div class="flex flex-wrap items-center justify-between gap-3 px-1 text-[11px] text-slate-500">
-      <span class="inline-flex items-center gap-1.5"><Clock3 class="w-3.5 h-3.5 text-teal-600" /> Inventario y precios conectados al gateway</span>
-      <span class="font-semibold text-slate-700">Categoría activa: {{ selectedCategory }}</span>
-    </div>
-
-    <!-- Grid de Productos -->
-    <section v-if="filteredProducts.length" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-      <article
-        v-for="prod in filteredProducts"
-        :key="prod.id"
-        class="reveal-up group flex flex-col bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm hover:-translate-y-1 hover:shadow-xl hover:shadow-teal-900/10 transition-all duration-300"
-      >
-        <!-- Imagen de Portada y Galería -->
-        <div class="relative h-56 bg-slate-100 dark:bg-slate-950 overflow-hidden">
-          <img
-            :src="prod.image"
-            :alt="prod.nombre"
-            class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 cursor-pointer"
-            @click="openProductGallery(prod)"
-          />
-          
-          <button
-            type="button"
-            :class="[
-              'absolute top-2.5 right-2.5 p-2 rounded-full bg-white/90 hover:bg-white shadow-sm backdrop-blur-sm transition-colors',
-              wishlistStore.estaEnDeseos(prod.id) ? 'text-rose-500' : 'text-slate-500 hover:text-rose-500'
-            ]"
-            :title="wishlistStore.estaEnDeseos(prod.id) ? 'Quitar de lista de deseos' : 'Agregar a lista de deseos'"
-            @click="alternarDeseo(prod)"
-          >
-            <Heart :class="['w-5 h-5', wishlistStore.estaEnDeseos(prod.id) ? 'fill-current' : '']" />
-          </button>
-          
-          <span class="absolute top-2.5 left-2.5 bg-teal-700/90 text-white text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
-            {{ prod.badge }}
+          <span class="text-[11px] text-slate-400 hidden sm:inline">
+            Sincronizado: {{ catalogUpdatedAt }}
           </span>
-
-          <!-- Indicador de Galería si tiene más fotos -->
-          <button
-            v-if="prod.galleryImages && prod.galleryImages.length > 0"
-            @click="openProductGallery(prod)"
-            class="absolute top-2.5 right-2.5 bg-black/60 hover:bg-black/80 text-white text-[10px] font-semibold px-2 py-1 rounded-md flex items-center gap-1 backdrop-blur-sm shadow"
-            title="Ver galería completa"
-          >
-            <Layers class="w-3 h-3 text-cyan-400" />
-            <span>{{ prod.galleryImages.length }} fotos</span>
-          </button>
-
-          <div class="absolute bottom-2.5 right-2.5 bg-black/60 text-white text-xs px-2 py-0.5 rounded-md flex items-center gap-1 backdrop-blur-sm">
-            <Star class="w-3 h-3 text-amber-400 fill-amber-400" />
-            <span>{{ prod.rating }}</span>
-          </div>
         </div>
 
-        <!-- Contenido -->
-        <div class="p-4 flex-1 flex flex-col justify-between space-y-3">
-          <div>
-            <span class="text-[11px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
-              {{ prod.categoria }}
-            </span>
-            <h3 
-              @click="openProductGallery(prod)"
-              class="font-semibold text-sm line-clamp-2 text-slate-800 dark:text-slate-100 group-hover:text-blue-600 transition-colors cursor-pointer"
-            >
-              {{ prod.nombre }}
-            </h3>
-            <p class="text-[11px] text-slate-400 font-mono mt-0.5">SKU: {{ prod.sku }}</p>
-          </div>
+        <!-- Grid de Tarjetas de Productos (Subcomponente ProductCard) -->
+        <section v-if="products.length > 0" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
+          <ProductCard
+            v-for="prod in products"
+            :key="prod.id"
+            :product="prod"
+            :is-in-wishlist="wishlistStore.estaEnDeseos(prod.id)"
+            @open-gallery="openProductGallery"
+            @toggle-wishlist="alternarDeseo"
+            @add-to-cart="agregarAlCarrito"
+          />
+        </section>
 
-          <div class="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
-            <div>
-              <span class="text-[10px] uppercase tracking-wider text-slate-400 block">Precio contado</span>
-              <span class="text-xl font-black text-slate-900 dark:text-white">
-                BOB {{ prod.precio.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}
+        <!-- Estado Vacío Cuando no hay Coincidencias con Recomendaciones (RF-19) -->
+        <div v-else class="space-y-8">
+          <section class="py-12 px-6 text-center bg-white/90 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+            <div class="w-16 h-16 mx-auto rounded-2xl bg-amber-50 dark:bg-amber-950 flex items-center justify-center text-amber-600 dark:text-amber-400">
+              <Search class="w-8 h-8" />
+            </div>
+            <div class="max-w-md mx-auto space-y-1.5">
+              <h2 class="text-lg font-black text-slate-800 dark:text-white">
+                No encontramos coincidencias para "{{ debouncedQuery || 'los filtros aplicados' }}"
+              </h2>
+              <p class="text-xs text-slate-500 leading-relaxed">
+                Ningún producto coincide con esta combinación de filtros. Puedes restablecerlos o descubrir nuestras recomendaciones sugeridas abajo.
+              </p>
+            </div>
+            <div class="pt-2 flex justify-center gap-3">
+              <button
+                @click="limpiarTodosLosFiltros"
+                class="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold shadow-md inline-flex items-center gap-2"
+              >
+                <RotateCcw class="w-3.5 h-3.5" />
+                <span>Restablecer todos los filtros</span>
+              </button>
+            </div>
+          </section>
+
+          <!-- Bloque de Recomendaciones (RF-19 / US-19 Cross-selling) -->
+          <section v-if="recommendedProducts.length > 0" class="space-y-4 pt-2">
+            <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div class="flex items-center gap-2">
+                <div class="p-1 rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400">
+                  <Sparkles class="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 class="text-sm font-extrabold text-slate-900 dark:text-white uppercase tracking-wider">
+                    Productos Recomendados para ti
+                  </h3>
+                  <p class="text-[11px] text-slate-400">Artículos populares y afines disponibles para entrega inmediata</p>
+                </div>
+              </div>
+              <span class="text-xs font-bold text-teal-700 dark:text-teal-400">
+                {{ recommendedProducts.length }} sugerencias
               </span>
             </div>
-            <button
-              @click="agregarAlCarrito(prod)"
-              class="p-2.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg shadow-sm active:scale-95 transition-all"
-              title="Añadir al carrito"
-            >
-              <ShoppingBag class="w-4 h-4" />
-            </button>
-          </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
+              <ProductCard
+                v-for="rec in recommendedProducts"
+                :key="'rec-' + rec.id"
+                :product="rec"
+                :is-in-wishlist="wishlistStore.estaEnDeseos(rec.id)"
+                @open-gallery="openProductGallery"
+                @toggle-wishlist="alternarDeseo"
+                @add-to-cart="agregarAlCarrito"
+              />
+            </div>
+          </section>
         </div>
-      </article>
-    </section>
-
-    <section v-else class="py-16 text-center bg-white/80 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800">
-      <Search class="w-10 h-10 mx-auto text-slate-300" />
-      <h2 class="mt-4 text-lg font-bold text-slate-800 dark:text-white">No encontramos coincidencias</h2>
-      <p class="mt-1 text-sm text-slate-500">Prueba con otra categoría o restablece tu búsqueda.</p>
-      <button @click="showOffers" class="mt-5 px-4 py-2 rounded-lg bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold">Ver todo el catálogo</button>
-    </section>
-
-    <!-- MODAL: Visor de Galería Visual del Producto -->
-    <div
-      v-if="activeGalleryProduct"
-      class="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4"
-      @click.self="activeGalleryProduct = null"
-    >
-      <div class="bg-white dark:bg-slate-900 rounded-2xl max-w-2xl w-full border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        <!-- Header del Modal -->
-        <div class="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-950/50">
-          <div>
-            <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ activeGalleryProduct.nombre }}</h3>
-            <span class="text-xs text-slate-400 font-mono">SKU: {{ activeGalleryProduct.sku }}</span>
-          </div>
-          <button @click="activeGalleryProduct = null" class="p-1 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500">
-            <X class="w-5 h-5" />
-          </button>
-        </div>
-
-        <!-- Imagen Principal Seleccionada -->
-        <div class="relative bg-slate-950 flex items-center justify-center h-80 overflow-hidden">
-          <img
-            :src="currentGalleryImage"
-            :alt="activeGalleryProduct.nombre"
-            class="max-h-full max-w-full object-contain"
-          />
-
-          <!-- Botones de Navegación si hay múltiples imágenes -->
-          <button
-            v-if="activeGalleryProduct.galleryImages.length > 1"
-            @click="currentGalleryIndex = (currentGalleryIndex - 1 + activeGalleryProduct.galleryImages.length) % activeGalleryProduct.galleryImages.length"
-            class="absolute left-3 p-2 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-sm"
-          >
-            <ChevronLeft class="w-5 h-5" />
-          </button>
-          <button
-            v-if="activeGalleryProduct.galleryImages.length > 1"
-            @click="currentGalleryIndex = (currentGalleryIndex + 1) % activeGalleryProduct.galleryImages.length"
-            class="absolute right-3 p-2 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-sm"
-          >
-            <ChevronRight class="w-5 h-5" />
-          </button>
-        </div>
-
-        <!-- Tira de Miniaturas (Thumbnails) -->
-        <div
-          v-if="activeGalleryProduct.galleryImages.length > 0"
-          class="p-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800 flex gap-2 overflow-x-auto"
-        >
-          <button
-            v-for="(img, idx) in activeGalleryProduct.galleryImages"
-            :key="img.id"
-            @click="currentGalleryIndex = idx"
-            :class="[
-              'w-16 h-16 rounded-xl border-2 overflow-hidden shrink-0 transition-all',
-              currentGalleryIndex === idx
-                ? 'border-blue-600 ring-2 ring-blue-500/20 scale-105'
-                : 'border-transparent opacity-70 hover:opacity-100'
-            ]"
-          >
-            <img :src="img.url" class="w-full h-full object-cover" alt="Thumbnail" />
-          </button>
-        </div>
-
-        <!-- Footer con Acción de Compra -->
-        <div class="p-4 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center">
-          <div>
-            <span class="text-xs text-slate-400 block">Precio Oficial</span>
-            <span class="text-xl font-extrabold text-blue-600 dark:text-blue-400">
-              BOB {{ activeGalleryProduct.precio.toLocaleString('es-BO', { minimumFractionDigits: 2 }) }}
-            </span>
-          </div>
-          <button
-            @click="agregarAlCarrito(activeGalleryProduct); activeGalleryProduct = null"
-            class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-md flex items-center gap-2"
-          >
-            <ShoppingBag class="w-4 h-4" />
-            <span>Añadir al Carrito</span>
-          </button>
-        </div>
-      </div>
+      </main>
     </div>
+
+    <!-- Visor Modal de Galería (Subcomponente) -->
+    <ProductGalleryModal
+      :product="activeGalleryProduct"
+      @close="activeGalleryProduct = null"
+      @add-to-cart="agregarAlCarrito"
+    />
   </div>
 </template>

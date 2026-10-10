@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useCartStore } from '@/stores/cart';
 import { useAuthStore } from '@/stores/auth';
-import { apiClient } from '@/api/client';
+import { useWishlistStore } from '@/stores/wishlist';
 import AuthModal from '@/components/auth/AuthModal.vue';
-import FiscalBillingForm from '@/components/FiscalBillingForm.vue';
-import type { DatosFiscales, FacturaEmitida } from '@/types';
+import CheckoutModal from '@/components/checkout/CheckoutModal.vue';
 import { 
   ShoppingBag, 
   Store, 
@@ -22,27 +21,52 @@ import {
   LogOut,
   User,
   ChevronDown,
-  CreditCard,
-  QrCode,
-  Building,
-  CheckCircle2,
-  Printer,
-  FileText,
-  ShieldCheck,
-  ArrowLeft
+  Loader2,
+  Heart
 } from 'lucide-vue-next';
 
 const route = useRoute();
 const cartStore = useCartStore();
 const authStore = useAuthStore();
+const wishlistStore = useWishlistStore();
 const isUserMenuOpen = ref(false);
+
+onMounted(() => {
+  wishlistStore.cargarDeseos(authStore.user?.id);
+});
+
+watch(
+  () => authStore.user?.id,
+  (newId) => {
+    wishlistStore.cargarDeseos(newId);
+  }
+);
+
+watch(
+  () => cartStore.isDrawerOpen,
+  (isOpen) => {
+    if (isOpen) void cartStore.refreshStock();
+  }
+);
+
+watch(
+  () => cartStore.isCheckoutModalOpen,
+  (isOpen) => {
+    if (isOpen && !authStore.user?.id) {
+      void cartStore.cancelarReserva();
+      authStore.openAuthModal('login');
+    }
+  },
+  { immediate: true }
+);
 
 const cuponInput = ref('');
 const cuponMsg = ref('');
+const checkoutMsg = ref('');
 
-function canjearCupon() {
+async function canjearCupon() {
   if (!cuponInput.value) return;
-  const ok = cartStore.aplicarCupon(cuponInput.value);
+  const ok = await cartStore.aplicarCupon(cuponInput.value);
   if (ok) {
     cuponMsg.value = '¡Cupón MAXI10 aplicado (10% de descuento)!';
   } else {
@@ -55,75 +79,15 @@ function handleLogout() {
   isUserMenuOpen.value = false;
 }
 
-// ============================================================================
-// CHECKOUT WEB CON DATOS FISCALES (KAN-346 / KAN-364 / KAN-367)
-// ============================================================================
-const isCheckoutModalOpen = ref(false);
-const checkoutStep = ref<'datos_y_pago' | 'factura_emitida'>('datos_y_pago');
-const webPayMethod = ref<'tarjeta' | 'qr' | 'transferencia'>('tarjeta');
-const isProcessingCheckout = ref(false);
-const checkoutError = ref('');
-const webFacturaEmitida = ref<FacturaEmitida | null>(null);
-
-const webFiscalData = ref<DatosFiscales>({
-  modalidad: 'con_factura',
-  tipo_documento: 'NIT',
-  nit_ci: authStore.user?.nit_ci || '1020304050',
-  razon_social: authStore.user?.razon_social || 'EMPRESA MINERA SAN CRISTÓBAL S.A.',
-  email_facturacion: authStore.user?.email || 'contabilidad@sancristobal.bo',
-  guardar_perfil: true
-});
-const isWebFiscalValid = ref(true);
-
-function openCheckoutModal() {
-  if (cartStore.items.length === 0) return;
-  cartStore.isDrawerOpen = false;
-  checkoutStep.value = 'datos_y_pago';
-  checkoutError.value = '';
-  isCheckoutModalOpen.value = true;
-}
-
-async function procesarPagoWeb() {
-  if (!isWebFiscalValid.value && webFiscalData.value.modalidad === 'con_factura') {
-    checkoutError.value = 'Por favor ingresa un NIT/CI y Razón Social válidos antes de continuar.';
+function handleIniciarCheckout() {
+  const clienteId = authStore.user?.id;
+  if (!clienteId) {
+    checkoutMsg.value = 'Inicia sesión para reservar el stock y continuar al checkout.';
+    authStore.openAuthModal('login');
     return;
   }
-
-  isProcessingCheckout.value = true;
-  checkoutError.value = '';
-
-  try {
-    const res = await apiClient.post('/v1/facturacion/emitir', {
-      modalidad: webFiscalData.value.modalidad,
-      tipo_documento: webFiscalData.value.tipo_documento,
-      nit_ci: webFiscalData.value.nit_ci,
-      razon_social: webFiscalData.value.razon_social,
-      email_facturacion: webFiscalData.value.email_facturacion,
-      guardar_perfil: webFiscalData.value.guardar_perfil,
-      sucursal: 'Plataforma Online - Marketplace Central',
-      punto_venta: 1,
-      metodo_pago: webPayMethod.value,
-      items: cartStore.items,
-      descuento: cartStore.descuento
-    });
-
-    webFacturaEmitida.value = res.data.factura;
-    checkoutStep.value = 'factura_emitida';
-    // Vaciar carrito tras emisión exitosa
-    cartStore.items = [];
-    cartStore.cupon = null;
-    cartStore.descuento = 0;
-  } catch (err: any) {
-    checkoutError.value = err.response?.data?.error || 'Error al emitir factura electrónica con el microservicio.';
-  } finally {
-    isProcessingCheckout.value = false;
-  }
-}
-
-function cerrarCheckoutModal() {
-  isCheckoutModalOpen.value = false;
-  checkoutStep.value = 'datos_y_pago';
-  webFacturaEmitida.value = null;
+  checkoutMsg.value = '';
+  cartStore.iniciarCheckoutConReserva(clienteId);
 }
 </script>
 
@@ -142,11 +106,11 @@ function cerrarCheckoutModal() {
               <span class="font-extrabold text-lg tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
                 MaxiConecta
               </span>
-              <span class="block text-[10px] text-slate-400 font-medium -mt-1">Marketplace y Ventas (Grupo E)</span>
+              <span class="block text-[10px] text-slate-400 font-medium -mt-1">Marketplace y Ventas</span>
             </div>
           </router-link>
 
-          <!-- Selector de Portales (Marketplace / POS / Admin) -->
+          <!-- Selector de Portales según Rol de Usuario -->
           <nav class="hidden md:flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
             <router-link
               to="/marketplace"
@@ -160,7 +124,23 @@ function cerrarCheckoutModal() {
               <ShoppingBag class="w-3.5 h-3.5" /> Marketplace
             </router-link>
 
+            <!-- Acceso a compras y cuenta para clientes -->
             <router-link
+              v-if="authStore.isAuthenticated && authStore.userRole === 'cliente'"
+              to="/mi-cuenta"
+              :class="[
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
+                route.path.startsWith('/mi-cuenta')
+                  ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+              ]"
+            >
+              <User class="w-3.5 h-3.5" /> Mis Compras
+            </router-link>
+
+            <!-- Pestaña Terminal POS: sólo para cajero o administrador -->
+            <router-link
+              v-if="authStore.hasRole(['cajero', 'administrador'])"
               to="/pos"
               :class="[
                 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
@@ -172,7 +152,9 @@ function cerrarCheckoutModal() {
               <Store class="w-3.5 h-3.5" /> Punto de Venta (POS)
             </router-link>
 
+            <!-- Pestaña Panel Admin: sólo para administrador o gerente comercial -->
             <router-link
+              v-if="authStore.hasRole(['administrador', 'gerente_comercial'])"
               to="/admin"
               :class="[
                 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
@@ -278,6 +260,19 @@ function cerrarCheckoutModal() {
                   <LayoutDashboard class="w-3.5 h-3.5 text-indigo-500" /> Panel Administrador
                 </router-link>
 
+                <router-link
+                  to="/wishlist"
+                  @click="isUserMenuOpen = false"
+                  class="flex items-center justify-between px-3 py-2 rounded-xl text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold"
+                >
+                  <span class="flex items-center gap-2">
+                    <Heart class="w-3.5 h-3.5 text-rose-500" /> Mi Lista de Deseos
+                  </span>
+                  <span v-if="wishlistStore.itemCount > 0" class="text-[10px] font-bold bg-rose-100 dark:bg-rose-900/60 text-rose-600 dark:text-rose-300 px-2 py-0.5 rounded-full">
+                    {{ wishlistStore.itemCount }}
+                  </span>
+                </router-link>
+
                 <div class="border-t border-slate-100 dark:border-slate-800 my-1"></div>
 
                 <button
@@ -290,9 +285,24 @@ function cerrarCheckoutModal() {
             </div>
           </div>
 
+          <!-- Botón Lista de Deseos (RF-21 / US-21) -->
+          <router-link
+            to="/wishlist"
+            class="relative p-2.5 bg-rose-50 dark:bg-rose-950/50 hover:bg-rose-100 dark:hover:bg-rose-900/40 text-rose-600 dark:text-rose-400 rounded-xl transition-colors"
+            title="Mi Lista de Deseos"
+          >
+            <Heart class="w-5 h-5" />
+            <span
+              v-if="wishlistStore.itemCount > 0"
+              class="absolute -top-1 -right-1 w-5 h-5 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center shadow-md"
+            >
+              {{ wishlistStore.itemCount }}
+            </span>
+          </router-link>
+
           <!-- Botón Carrito Flotante (RF-13) -->
           <button
-            @click="cartStore.toggleDrawer"
+            @click="cartStore.openDrawer"
             class="relative p-2.5 bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 text-blue-600 dark:text-blue-400 rounded-xl"
             title="Abrir Carrito"
           >
@@ -314,30 +324,39 @@ function cerrarCheckoutModal() {
     </main>
 
     <!-- Drawer Deslizante de Carrito Persistente (RF-13, RF-14) -->
-    <div
-      v-if="cartStore.isDrawerOpen"
-      class="fixed inset-0 z-50 overflow-hidden bg-black/60 backdrop-blur-sm transition-opacity"
-    >
+    <Teleport to="body">
+      <Transition name="cart-overlay">
+        <div
+          v-if="cartStore.isDrawerOpen"
+          class="fixed inset-0 z-[100] overflow-hidden bg-black/60 backdrop-blur-sm"
+          @click.self="cartStore.closeDrawer"
+        >
       <div class="fixed inset-y-0 right-0 max-w-full flex pl-10">
-        <div class="w-screen max-w-md bg-white dark:bg-slate-900 shadow-2xl flex flex-col border-l border-slate-200 dark:border-slate-800">
+        <div class="cart-drawer w-screen max-w-md bg-white dark:bg-slate-900 shadow-2xl flex flex-col border-l border-slate-200 dark:border-slate-800">
           <!-- Drawer Header -->
           <div class="p-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
             <div class="flex items-center gap-2">
               <ShoppingBag class="w-5 h-5 text-blue-600" />
-              <h2 class="text-base font-bold">Carrito de Compras (Redis)</h2>
+              <div>
+                <h2 class="text-base font-bold">Carrito de Compras</h2>
+                <span class="text-[10px] text-emerald-600 font-semibold flex items-center gap-1"><span class="w-1.5 h-1.5 bg-emerald-500 rounded-full soft-pulse"></span> Sincronizado en tiempo real</span>
+              </div>
             </div>
-            <button @click="cartStore.toggleDrawer" class="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+            <button @click="cartStore.closeDrawer" class="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
               <X class="w-5 h-5 text-slate-500" />
             </button>
           </div>
 
           <!-- Drawer Body: Lista de Ítems -->
           <div class="flex-1 overflow-y-auto p-5 space-y-4">
-            <div
-              v-for="item in cartStore.items"
-              :key="item.variante_id"
-              class="flex gap-3 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-100 dark:border-slate-800"
-            >
+            <p v-if="cartStore.error" class="p-3 rounded-lg bg-rose-50 text-rose-700 text-xs font-medium">{{ cartStore.error }}</p>
+            <div v-if="cartStore.isLoading" class="flex items-center gap-2 text-xs text-slate-400"><span class="w-4 h-4 border-2 border-teal-600 border-t-transparent rounded-full animate-spin"></span> Actualizando carrito...</div>
+            <TransitionGroup name="cart-item" tag="div" class="space-y-3">
+              <div
+                v-for="item in cartStore.items"
+                :key="item.variante_id"
+                class="flex gap-3 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-100 dark:border-slate-800"
+              >
               <div class="flex-1">
                 <h4 class="text-xs font-bold text-slate-800 dark:text-slate-200 line-clamp-2">{{ item.nombre }}</h4>
                 <span class="text-[11px] font-mono text-slate-400">BOB {{ item.precio_unitario.toFixed(2) }} c/u</span>
@@ -345,8 +364,9 @@ function cerrarCheckoutModal() {
                 <div class="flex items-center gap-2 mt-2">
                   <button @click="cartStore.updateQuantity(item.variante_id, -1)" class="w-6 h-6 rounded bg-slate-200 dark:bg-slate-700 text-xs font-bold">-</button>
                   <span class="text-xs font-bold px-1">{{ item.cantidad }}</span>
-                  <button @click="cartStore.updateQuantity(item.variante_id, 1)" class="w-6 h-6 rounded bg-slate-200 dark:bg-slate-700 text-xs font-bold">+</button>
+                  <button @click="cartStore.updateQuantity(item.variante_id, 1)" :disabled="!cartStore.canIncrease(item)" class="w-6 h-6 rounded bg-slate-200 dark:bg-slate-700 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed" :title="cartStore.canIncrease(item) ? 'Aumentar cantidad' : `Máximo disponible: ${item.stock_disponible ?? 0}`">+</button>
                 </div>
+                <span v-if="item.stock_disponible !== undefined" class="mt-1 block text-[10px] text-slate-400">{{ item.stock_disponible }} disponibles</span>
               </div>
 
               <div class="flex flex-col justify-between items-end">
@@ -355,7 +375,8 @@ function cerrarCheckoutModal() {
                 </button>
                 <span class="text-sm font-bold text-blue-600">BOB {{ item.total_linea.toFixed(2) }}</span>
               </div>
-            </div>
+              </div>
+            </TransitionGroup>
 
             <div v-if="cartStore.items.length === 0" class="py-12 text-center text-slate-400 space-y-2">
               <ShoppingBag class="w-12 h-12 mx-auto text-slate-300 dark:text-slate-700" />
@@ -365,7 +386,7 @@ function cerrarCheckoutModal() {
 
           <!-- Drawer Footer: Cupones y Checkout -->
           <div class="p-5 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/80 space-y-3">
-            <!-- Input Cupón (RF-17) -->
+            <!-- Input Cupón -->
             <div class="flex gap-2">
               <input
                 v-model="cuponInput"
@@ -378,6 +399,7 @@ function cerrarCheckoutModal() {
               </button>
             </div>
             <p v-if="cuponMsg" class="text-[11px] text-emerald-600 font-semibold">{{ cuponMsg }}</p>
+            <p v-if="checkoutMsg" class="text-[11px] text-teal-700 font-semibold">{{ checkoutMsg }}</p>
 
             <div class="space-y-1 text-xs text-slate-500 pt-1">
               <div class="flex justify-between">
@@ -395,213 +417,22 @@ function cerrarCheckoutModal() {
             </div>
 
             <button
-              @click="openCheckoutModal"
-              :disabled="cartStore.items.length === 0"
-              class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 active:scale-98 transition-all"
+              @click="handleIniciarCheckout"
+              :disabled="cartStore.items.length === 0 || cartStore.isReserving"
+              class="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all hover:shadow-blue-500/25"
             >
-              <FileText class="w-4 h-4" />
-              <span>Continuar al Pago y Facturación</span>
-              <ChevronRight class="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- =================================================================== -->
-    <!-- MODAL DE CHECKOUT WEB CON FACTURACIÓN ELECTRÓNICA (KAN-346, KAN-364) -->
-    <!-- =================================================================== -->
-    <div
-      v-if="isCheckoutModalOpen"
-      class="fixed inset-0 z-50 overflow-y-auto bg-black/65 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div class="bg-white dark:bg-slate-900 w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-5 sm:p-7 space-y-6">
-        <!-- Paso 1: Ingreso de Datos Fiscales y Selección de Pago -->
-        <div v-if="checkoutStep === 'datos_y_pago'" class="space-y-5">
-          <div class="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-3">
-            <div>
-              <h3 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <FileText class="w-5 h-5 text-blue-600" />
-                <span>Checkout y Emisión de Factura Legal</span>
-              </h3>
-              <p class="text-xs text-slate-500 mt-0.5">Captura de NIT/CI y Razón Social antes de procesar el pago (KAN-346)</p>
-            </div>
-            <button @click="cerrarCheckoutModal" class="p-1 rounded-lg text-slate-400 hover:text-slate-700">
-              <X class="w-4 h-4" />
-            </button>
-          </div>
-
-          <!-- Resumen de Pedido -->
-          <div class="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 flex justify-between items-center">
-            <div>
-              <span class="text-xs font-semibold text-slate-500">Monto Total de Compra:</span>
-              <p class="text-xs text-slate-400">{{ cartStore.items.length }} producto(s) en orden</p>
-            </div>
-            <div class="text-right">
-              <span class="text-xl font-black text-blue-600 dark:text-blue-400">BOB {{ cartStore.total.toFixed(2) }}</span>
-              <span v-if="cartStore.descuento > 0" class="block text-[10px] text-emerald-600 font-bold">Cupón aplicado: -BOB {{ cartStore.descuento.toFixed(2) }}</span>
-            </div>
-          </div>
-
-          <!-- Componente Formulario Fiscal (KAN-364) -->
-          <div class="p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-700">
-            <FiscalBillingForm
-              v-model="webFiscalData"
-              context="web"
-              @validation-change="isWebFiscalValid = $event"
-            />
-          </div>
-
-          <!-- Selector de Método de Pago Online -->
-          <div class="space-y-2">
-            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Selecciona tu método de pago:</label>
-            <div class="grid grid-cols-3 gap-2 sm:gap-3">
-              <button
-                type="button"
-                @click="webPayMethod = 'tarjeta'"
-                :class="[
-                  'p-3 rounded-xl border flex flex-col items-center gap-1.5 text-xs font-bold transition-all',
-                  webPayMethod === 'tarjeta'
-                    ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 shadow-sm'
-                    : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                ]"
-              >
-                <CreditCard class="w-5 h-5" /> Tarjeta de Débito / Crédito
-              </button>
-              <button
-                type="button"
-                @click="webPayMethod = 'qr'"
-                :class="[
-                  'p-3 rounded-xl border flex flex-col items-center gap-1.5 text-xs font-bold transition-all',
-                  webPayMethod === 'qr'
-                    ? 'border-purple-600 bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 shadow-sm'
-                    : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                ]"
-              >
-                <QrCode class="w-5 h-5" /> Pago QR Simple
-              </button>
-              <button
-                type="button"
-                @click="webPayMethod = 'transferencia'"
-                :class="[
-                  'p-3 rounded-xl border flex flex-col items-center gap-1.5 text-xs font-bold transition-all',
-                  webPayMethod === 'transferencia'
-                    ? 'border-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 shadow-sm'
-                    : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                ]"
-              >
-                <Building class="w-5 h-5" /> Transferencia Bancaria
-              </button>
-            </div>
-          </div>
-
-          <p v-if="checkoutError" class="p-3 rounded-lg bg-rose-50 text-rose-600 text-xs font-semibold border border-rose-200">
-            {{ checkoutError }}
-          </p>
-
-          <div class="flex justify-between items-center pt-3 border-t border-slate-100 dark:border-slate-800">
-            <button
-              type="button"
-              @click="cerrarCheckoutModal"
-              class="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-            >
-              Volver al carrito
-            </button>
-            <button
-              type="button"
-              @click="procesarPagoWeb"
-              :disabled="isProcessingCheckout"
-              class="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold text-xs rounded-xl shadow-lg flex items-center gap-2"
-            >
-              <CheckCircle2 class="w-4 h-4" />
-              <span>{{ isProcessingCheckout ? 'Procesando y Timbrando...' : 'Confirmar Pago y Emitir Factura' }}</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- Paso 2: Factura Electrónica Emitida con Éxito (KAN-367) -->
-        <div v-else class="space-y-5 text-center">
-          <div class="w-14 h-14 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-600 flex items-center justify-center mx-auto shadow-inner">
-            <CheckCircle2 class="w-8 h-8" />
-          </div>
-          <div>
-            <h3 class="text-xl font-black text-slate-900 dark:text-white">¡Compra y Factura Electrónica Procesadas!</h3>
-            <p class="text-xs text-slate-500 mt-1">La factura legal con timbrado digital CUF ha sido emitida exitosamente.</p>
-          </div>
-
-          <!-- Documento Tributario Digital -->
-          <div class="p-5 bg-slate-50 dark:bg-slate-800/80 rounded-2xl border border-slate-200 dark:border-slate-700 text-left font-mono text-xs space-y-3 shadow-sm">
-            <div class="text-center border-b border-dashed border-slate-300 dark:border-slate-700 pb-3">
-              <h4 class="font-extrabold text-sm">MAXICONECTA BOLIVIA S.R.L.</h4>
-              <p class="text-[10px] text-slate-500">Casa Matriz: Av. 16 de Julio N° 1440 · La Paz, Bolivia</p>
-              <p class="text-[10px] text-slate-500">NIT Emisor: 1028374029</p>
-              <span class="inline-block px-2.5 py-0.5 mt-1.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 text-[10px] font-bold">
-                FACTURA ELECTRÓNICA EN LÍNEA N° {{ webFacturaEmitida?.numero_factura }}
+              <Loader2 v-if="cartStore.isReserving" class="w-4 h-4 animate-spin" />
+              <span v-if="cartStore.isReserving">Reservando productos...</span>
+              <span v-else class="flex items-center gap-2">
+                Iniciar Checkout <ChevronRight class="w-4 h-4" />
               </span>
-            </div>
-
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] border-b border-dashed border-slate-300 dark:border-slate-700 pb-3">
-              <div>
-                <span class="text-slate-400 block text-[10px]">FECHA Y HORA:</span>
-                <span class="font-bold">{{ new Date(webFacturaEmitida?.fecha_emision || Date.now()).toLocaleString('es-BO') }}</span>
-              </div>
-              <div>
-                <span class="text-slate-400 block text-[10px]">NIT / CI / CEX:</span>
-                <span class="font-bold font-mono">{{ webFacturaEmitida?.datos_comprador.nit_ci }}</span>
-              </div>
-              <div class="sm:col-span-2">
-                <span class="text-slate-400 block text-[10px]">RAZÓN SOCIAL:</span>
-                <span class="font-bold text-slate-900 dark:text-white uppercase">{{ webFacturaEmitida?.datos_comprador.razon_social }}</span>
-              </div>
-              <div v-if="webFacturaEmitida?.datos_comprador.email_facturacion" class="sm:col-span-2">
-                <span class="text-slate-400 block text-[10px]">CORREO DE ENVÍO FACTURA:</span>
-                <span>{{ webFacturaEmitida.datos_comprador.email_facturacion }}</span>
-              </div>
-            </div>
-
-            <div class="space-y-1 text-right text-xs">
-              <div class="flex justify-between font-bold text-sm">
-                <span>TOTAL PAGADO:</span>
-                <span class="text-emerald-600 font-black">BOB {{ webFacturaEmitida?.total.toFixed(2) }}</span>
-              </div>
-              <div class="text-[10px] text-slate-400 flex justify-between">
-                <span>Método de Pago:</span>
-                <span class="uppercase font-bold">{{ webFacturaEmitida?.metodo_pago }}</span>
-              </div>
-            </div>
-
-            <!-- CUF y QR Fiscal -->
-            <div class="pt-2 text-center space-y-2 border-t border-dashed border-slate-300 dark:border-slate-700">
-              <div class="p-2 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 text-[10px] break-all font-mono">
-                <span class="font-bold text-slate-500 block">CÓDIGO ÚNICO DE FACTURACIÓN (CUF):</span>
-                <span class="text-blue-600 dark:text-blue-400 font-bold">{{ webFacturaEmitida?.cuf }}</span>
-              </div>
-
-              <div class="flex justify-center py-1">
-                <div class="p-2 bg-white rounded-lg border border-slate-300 shadow-sm inline-block">
-                  <QrCode class="w-16 h-16 text-slate-900" />
-                </div>
-              </div>
-
-              <p class="text-[9px] text-slate-400">
-                "ESTA FACTURA CONTRIBUYE AL DESARROLLO DEL PAÍS, EL USO ILÍCITO SERÁ SANCIONADO PENALMENTE DE ACUERDO A LEY"
-              </p>
-            </div>
-          </div>
-
-          <div class="flex justify-center gap-3 pt-2">
-            <button
-              @click="cerrarCheckoutModal"
-              class="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-lg"
-            >
-              Aceptar y Seguir Explorando
             </button>
           </div>
         </div>
       </div>
-    </div>
+        </div>
+      </Transition>
+    </Teleport>
 
     <!-- Footer Institucional UCB -->
     <footer class="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 py-6 text-center text-xs text-slate-500">
@@ -617,5 +448,8 @@ function cerrarCheckoutModal() {
 
     <!-- Modal de Autenticación Unificado (Login / Registro / Cuentas Demo) -->
     <AuthModal />
+
+    <!-- Modal de Checkout con Reserva de Stock y Contador TTL (RF-14 · RIO-INV-02) -->
+    <CheckoutModal />
   </div>
 </template>
