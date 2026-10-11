@@ -69,16 +69,16 @@ function handleLogout() {
 <template>
   <div class="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
     <!-- Navbar Superior Profesional -->
-    <header class="sticky top-0 z-40 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
+    <header class="app-header sticky top-0 z-40 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border-b border-emerald-950/10 dark:border-slate-800">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         <!-- Logo y Marca -->
         <div class="flex items-center gap-6">
           <router-link to="/" class="flex items-center gap-2 group">
-            <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center text-white font-extrabold shadow-md group-hover:scale-105 transition-transform">
+            <div class="brand-mark w-9 h-9 rounded-xl flex items-center justify-center text-white font-extrabold group-hover:scale-105 transition-transform">
               M
             </div>
             <div>
-              <span class="font-extrabold text-lg tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+              <span class="font-extrabold text-lg tracking-tight text-emerald-950 dark:text-emerald-100">
                 MaxiConecta
               </span>
               <span class="block text-[10px] text-slate-400 font-medium -mt-1">Marketplace y Ventas (Grupo E)</span>
@@ -86,13 +86,13 @@ function handleLogout() {
           </router-link>
 
           <!-- Selector de Portales (Marketplace / POS / Admin) -->
-          <nav class="hidden md:flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
+          <nav class="portal-nav hidden md:flex items-center gap-1 bg-white/70 dark:bg-slate-800/90 p-1 rounded-xl">
             <router-link
               to="/marketplace"
               :class="[
                 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
                 route.path.startsWith('/marketplace')
-                  ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-sm'
+                  ? 'bg-emerald-800 dark:bg-emerald-700 text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
               ]"
             >
@@ -104,7 +104,7 @@ function handleLogout() {
               :class="[
                 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
                 route.path.startsWith('/pos')
-                  ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-sm'
+                  ? 'bg-teal-700 dark:bg-teal-600 text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
               ]"
             >
@@ -116,7 +116,7 @@ function handleLogout() {
               :class="[
                 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
                 route.path.startsWith('/admin')
-                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                  ? 'bg-slate-800 dark:bg-slate-600 text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
               ]"
             >

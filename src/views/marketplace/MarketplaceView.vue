@@ -218,47 +218,47 @@ function alternarDeseo(prod: MarketplaceProduct) {
 <template>
   <div class="space-y-8">
     <!-- Hero Banner Promocional -->
-    <section class="relative overflow-hidden rounded-2xl bg-gradient-to-br from-teal-50 via-cyan-50 to-amber-100 p-7 sm:p-10 md:p-14 text-slate-950 shadow-xl shadow-teal-950/10 border border-white surface-grid">
-      <div class="absolute inset-0 bg-[radial-gradient(circle_at_88%_20%,rgba(251,191,36,0.42),transparent_24%),radial-gradient(circle_at_20%_100%,rgba(45,212,191,0.28),transparent_32%)]" />
+    <section class="marketplace-hero relative overflow-hidden rounded-2xl p-7 sm:p-10 md:p-14 text-white border border-white/20 surface-grid">
+      <div class="absolute inset-0 bg-[linear-gradient(115deg,transparent_45%,rgba(255,255,255,0.08)_45%,transparent_46%),linear-gradient(25deg,transparent_66%,rgba(239,118,91,0.14)_66%,transparent_67%)]" />
       <div class="relative z-10 grid grid-cols-1 lg:grid-cols-[1.4fr_0.6fr] gap-8 items-end">
         <div class="max-w-2xl space-y-5">
-          <span class="inline-flex items-center gap-1.5 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold tracking-wide text-teal-900 backdrop-blur-md border border-teal-200 shadow-sm">
-            <Sparkles class="w-3.5 h-3.5 text-amber-600" /> Selección tecnológica curada
+          <span class="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold tracking-wide text-emerald-50 backdrop-blur-md border border-white/20">
+            <Sparkles class="w-3.5 h-3.5 text-orange-300" /> Selección tecnológica curada
           </span>
-          <p class="text-xs font-bold uppercase tracking-[0.18em] text-teal-700">MaxiConecta marketplace</p>
-          <h1 class="display-font text-4xl sm:text-5xl md:text-6xl font-bold leading-[1.03]">
+          <p class="text-xs font-bold uppercase tracking-[0.18em] text-emerald-200">MaxiConecta marketplace</p>
+          <h1 class="display-font max-w-3xl text-4xl sm:text-5xl md:text-6xl font-bold leading-[1.03] text-white">
             Tecnología lista para tu próximo movimiento.
           </h1>
-          <p class="max-w-xl text-slate-700 text-sm sm:text-base leading-relaxed">
+          <p class="max-w-xl text-emerald-50/85 text-sm sm:text-base leading-relaxed">
             Compara equipos, encuentra disponibilidad inmediata y compra con la misma experiencia que conecta nuestras sucursales.
           </p>
           <div class="flex flex-wrap gap-3 pt-1">
-            <button @click="showOffers" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-300 hover:bg-amber-200 text-slate-950 text-sm font-bold shadow-lg shadow-amber-950/20">
+            <button @click="showOffers" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-orange-300 hover:bg-orange-200 text-emerald-950 text-sm font-bold shadow-lg shadow-emerald-950/20">
               Ver catálogo <ChevronRight class="w-4 h-4" />
             </button>
-            <button @click="selectedCategory = 'Laptops y PCs'" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white/80 hover:bg-white border border-teal-200 text-teal-900 text-sm font-semibold shadow-sm backdrop-blur-sm">
+            <button @click="selectedCategory = 'Laptops y PCs'" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/25 text-white text-sm font-semibold backdrop-blur-sm">
               Explorar laptops
             </button>
           </div>
         </div>
         <div class="grid grid-cols-2 gap-3 max-w-sm lg:justify-self-end">
-          <div class="rounded-xl bg-white/80 p-4 border border-white shadow-sm backdrop-blur-sm">
-            <span class="block text-3xl font-black text-amber-500">{{ inventorySummary.products }}</span>
-            <span class="block mt-1 text-[11px] uppercase tracking-wider text-slate-600">productos visibles</span>
+          <div class="rounded-xl bg-white/10 p-4 border border-white/15 backdrop-blur-sm">
+            <span class="block text-3xl font-black text-orange-200">{{ inventorySummary.products }}</span>
+            <span class="block mt-1 text-[11px] uppercase tracking-wider text-emerald-50/75">productos visibles</span>
           </div>
-          <div class="rounded-xl bg-white/80 p-4 border border-white shadow-sm backdrop-blur-sm">
-            <span class="block text-3xl font-black text-teal-800">{{ inventorySummary.units }}</span>
-            <span class="block mt-1 text-[11px] uppercase tracking-wider text-slate-600">unidades en stock</span>
+          <div class="rounded-xl bg-white/10 p-4 border border-white/15 backdrop-blur-sm">
+            <span class="block text-3xl font-black text-white">{{ inventorySummary.units }}</span>
+            <span class="block mt-1 text-[11px] uppercase tracking-wider text-emerald-50/75">unidades en stock</span>
           </div>
-          <div class="col-span-2 rounded-xl bg-slate-900/85 p-4 border border-slate-900 flex items-center gap-3 shadow-lg shadow-slate-900/10">
-            <ShieldCheck class="w-9 h-9 text-teal-300 shrink-0" />
-            <p class="text-xs leading-relaxed text-slate-100">Precios sincronizados con catálogo y disponibilidad por sucursal.</p>
+          <div class="col-span-2 rounded-xl bg-emerald-950/40 p-4 border border-white/10 flex items-center gap-3">
+            <ShieldCheck class="w-9 h-9 text-orange-200 shrink-0" />
+            <p class="text-xs leading-relaxed text-emerald-50">Precios sincronizados con catálogo y disponibilidad por sucursal.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="flex flex-col md:flex-row gap-4 justify-between items-center bg-white/90 dark:bg-slate-900/90 p-4 rounded-xl border border-white shadow-lg shadow-slate-300/30 dark:border-slate-800 dark:shadow-none backdrop-blur-sm">
+    <section class="marketplace-toolbar flex flex-col md:flex-row gap-4 justify-between items-center bg-white/95 dark:bg-slate-900/95 p-4 rounded-xl border border-white dark:border-slate-800 backdrop-blur-sm">
       <div class="flex items-center gap-3 w-full md:w-auto">
         <span class="w-10 h-10 shrink-0 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center">
           <Filter class="w-4 h-4" />
@@ -320,7 +320,7 @@ function alternarDeseo(prod: MarketplaceProduct) {
       <article
         v-for="prod in filteredProducts"
         :key="prod.id"
-        class="reveal-up group flex flex-col bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm hover:-translate-y-1 hover:shadow-xl hover:shadow-teal-900/10 transition-all duration-300"
+        class="product-tile reveal-up group flex flex-col bg-white dark:bg-slate-900 rounded-xl border border-slate-200/80 dark:border-slate-800 overflow-hidden hover:-translate-y-1 hover:border-teal-200 dark:hover:border-teal-800 transition-all duration-300"
       >
         <!-- Imagen de Portada y Galería -->
         <div class="relative h-56 bg-slate-100 dark:bg-slate-950 overflow-hidden">
