@@ -30,14 +30,14 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(credentials: LoginPayload): Promise<UserProfile> {
-    const response = await apiClient.post<AuthResponse>('/api/v1/clientes/auth/login', credentials);
+    const response = await apiClient.post<AuthResponse>('/v1/clientes/auth/login', credentials);
     const { access_token, refresh_token, user: profile } = response.data;
     setSession(access_token, refresh_token, profile);
     return profile;
   }
 
   async function register(payload: RegisterPayload): Promise<UserProfile> {
-    const response = await apiClient.post<AuthResponse>('/api/v1/clientes/auth/registro', payload);
+    const response = await apiClient.post<AuthResponse>('/v1/clientes/auth/registro', payload);
     const { access_token, refresh_token, user: profile } = response.data;
     setSession(access_token, refresh_token, profile);
     return profile;
@@ -46,7 +46,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function fetchProfile(): Promise<UserProfile | null> {
     if (!token.value) return null;
     try {
-      const response = await apiClient.get<UserProfile>('/api/v1/clientes/auth/me');
+      const response = await apiClient.get<UserProfile>('/v1/clientes/auth/me');
       user.value = response.data;
       localStorage.setItem('maxiconecta_user', JSON.stringify(response.data));
       return response.data;
@@ -79,19 +79,6 @@ export const useAuthStore = defineStore('auth', () => {
     const allowed = Array.isArray(roles) ? roles : [roles];
     return allowed.includes(user.value.role);
   }
-
-  window.addEventListener('maxiconecta:session-refreshed', (event) => {
-    const data = (event as CustomEvent<AuthResponse>).detail;
-    token.value = data.access_token;
-    refreshToken.value = data.refresh_token;
-    if (data.user) user.value = data.user;
-  });
-
-  window.addEventListener('maxiconecta:session-expired', () => {
-    if (!user.value) return;
-    logout();
-    openAuthModal('login');
-  });
 
   return {
     token,

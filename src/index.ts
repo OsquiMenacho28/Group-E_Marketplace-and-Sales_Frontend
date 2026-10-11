@@ -323,4 +323,5 @@ export interface ConfirmarEntregaPayload {
   cajero_id?: string;
   cajero_nombre?: string;
   sucursal_id?: string;
+  sucursal_nombre?: string;
 }

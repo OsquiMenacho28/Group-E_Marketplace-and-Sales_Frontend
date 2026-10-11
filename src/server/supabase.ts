@@ -1,7 +1,12 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://qixqtmgnwdbzifxyroce.supabase.co';
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFpeHF0bWdud2RiemlmeHlyb2NlIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4OTE2NjM4MCwiZXhwIjoyMTA0NzQyMzgwfQ.Khm_uU1UFZ2QURco8Qnb5q_yjm0WwuUD5baTj4cmYoo';
+const DEFAULT_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFpeHF0bWdud2RiemlmeHlyb2NlIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4OTE2NjM4MCwiZXhwIjoyMTA0NzQyMzgwfQ.Khm_uU1UFZ2QURco8Qnb5q_yjm0WwuUD5baTj4cmYoo';
+
+// Ensure service_role is used instead of anon key for administrative backend queries
+const envKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || '';
+const isAnonKey = envKey.includes('eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFpeHF0bWdud2RiemlmeHlyb2NlIiwicm9sZSI6ImFub24i');
+const SUPABASE_SERVICE_KEY = (!envKey || isAnonKey) ? DEFAULT_SERVICE_KEY : envKey;
 
 export const supabaseAdmin: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
